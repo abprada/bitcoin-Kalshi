@@ -160,7 +160,8 @@ def _(DERIVED, WRITE, iv, mo, np, pd, quotes, snapshots, write_parquet):
     iv_snapshots["clean"] = (iv_snapshots.atm_iv.notna() & (iv_snapshots.strikes_per_sd >= 2)
                              & (iv_snapshots.forward_basis_bps.abs() <= 25))
     iv_strikes = pd.concat(_strike_parts, ignore_index=True).merge(
-        iv_snapshots[["snap", "event_ticker", "ts", "tau_years", "hours_to_expiry", "forward", "atm_iv", "clean"]], on="snap")
+        iv_snapshots[["snap", "event_ticker", "ts", "spot", "tau_years", "hours_to_expiry", "forward", "atm_iv", "clean"]], on="snap")
+    iv_strikes["moneyness"] = iv_strikes.strike / iv_strikes.spot  # strike / exchange spot: the axis used in the charts
     iv_strikes["log_moneyness"] = np.log(iv_strikes.strike / iv_strikes.forward)
     iv_strikes["sd_from_forward"] = iv_strikes.log_moneyness / (iv_strikes.atm_iv * np.sqrt(iv_strikes.tau_years))
 
@@ -261,13 +262,13 @@ def _(CONTEXT, MUTED, SLOT1, W, alt, iv_strikes, pd):
         tip = [alt.Tooltip("strike:Q", format=",.0f"), alt.Tooltip("mid:Q", format=".3f", title="binary mid"),
                alt.Tooltip("iv:Q", format=".1%", title="integrated IV"), alt.Tooltip("digital_iv:Q", format=".1%", title="direct binary IV"),
                alt.Tooltip("option:N")]
-        base = alt.Chart(long).encode(x=alt.X("log_moneyness:Q", title="ln(strike / implied forward)"),
+        base = alt.Chart(long).encode(x=alt.X("moneyness:Q", title="moneyness (strike / spot)", scale=alt.Scale(zero=False), axis=alt.Axis(format=".2f")),
                                       y=alt.Y("vol:Q", title="implied vol", axis=alt.Axis(format="%"), scale=alt.Scale(zero=False)),
                                       color=color, tooltip=tip)
         chart = (
             base.transform_filter("datum.method == 'integrated vanilla IV'").mark_line(point=True)
             + base.transform_filter("datum.method == 'direct binary IV'").mark_point(filled=True, size=40, opacity=0.8)
-            + alt.Chart(pd.DataFrame({"x": [0.0]})).mark_rule(color=CONTEXT).encode(x="x:Q")
+            + alt.Chart(pd.DataFrame({"x": [1.0]})).mark_rule(color=CONTEXT).encode(x="x:Q")
         ).properties(width=W, height=280, title=(
             f"{row.event_ticker} · {row.hours_to_expiry:.1f}h to expiry · ATM {row.atm_iv:.1%} · "
             f"forward basis {row.forward_basis_bps:+.1f} bps · {'clean' if row.clean else 'not clean'}"))
@@ -290,26 +291,26 @@ def _(hours_slider, iv_snapshots, make_smile_chart, mo, week_select):
 
 @app.cell
 def _(CLEAN, H, SLOT1, SLOT2, W, alt, iv_snapshots, iv_strikes, mo, np, pd):
-    # Pooled surface: median implied vol by standard deviations from the forward x time to expiry (clean snapshots)
+    # Pooled surface: median implied vol by moneyness (strike / spot) x time to expiry (clean snapshots)
     _c = iv_strikes[iv_strikes.clean & iv_strikes.iv.notna()]
     TAU_LABELS = ["1–3h", "3–6h", "6–12h", "12–24h", "1–2d", "2–3d", "3–5d", "5–7d"]
     _tau = pd.cut(_c.hours_to_expiry, [1, 3, 6, 12, 24, 48, 72, 120, 170], labels=TAU_LABELS)
-    _z = pd.cut(_c.sd_from_forward, np.arange(-3, 3.01, 0.25))
+    _z = pd.cut(_c.moneyness, np.arange(0.85, 1.1501, 0.01))
     surface = (_c.assign(tau=_tau, z=_z).groupby(["tau", "z"], observed=True).iv.agg(["median", "size"])
                .reset_index().query("size >= 30"))
     surface["z_mid"] = surface.z.map(lambda i: round(i.mid, 3)).astype(float)
-    surface["z_lo"], surface["z_hi"] = surface.z_mid - 0.125, surface.z_mid + 0.125
+    surface["z_lo"], surface["z_hi"] = surface.z_mid - 0.005, surface.z_mid + 0.005
     surface = surface.drop(columns="z").astype({"tau": str})  # intervals/categoricals do not serialize to the chart
     surface_chart = (
         alt.Chart(surface).mark_rect()
-        .encode(x=alt.X("z_lo:Q", title="standard deviations from the implied forward  (ln(K/F) / (ATM vol · √τ))",
-                        scale=alt.Scale(domain=[-3, 3]), axis=alt.Axis(values=list(range(-3, 4)))),
+        .encode(x=alt.X("z_lo:Q", title="moneyness (strike / spot)",
+                        scale=alt.Scale(domain=[0.85, 1.15]), axis=alt.Axis(values=[0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15], format=".2f")),
                 x2="z_hi:Q",
                 y=alt.Y("tau:N", sort=TAU_LABELS[::-1], title="time to expiry"),
                 color=alt.Color("median:Q", title="median IV",
                                 scale=alt.Scale(range=["#cde2fb", "#0d366b"], domain=[0.35, 0.9], clamp=True),
                                 legend=alt.Legend(format="%")),
-                tooltip=["tau:N", alt.Tooltip("z_mid:Q", title="SDs from forward"), alt.Tooltip("median:Q", format=".1%"),
+                tooltip=["tau:N", alt.Tooltip("z_mid:Q", title="moneyness", format=".3f"), alt.Tooltip("median:Q", format=".1%"),
                          alt.Tooltip("size:Q", format=",", title="strike-snapshots")])
         .properties(title="Implied-vol surface: median across all clean snapshots", width=W, height=260)
     )
@@ -346,8 +347,8 @@ def _(CLEAN, H, SLOT1, SLOT2, W, alt, iv_snapshots, iv_strikes, mo, np, pd):
         surface_chart,
         mo.md(f"""
         Reading across a row gives the average smile at that time to expiry; reading down a column shows how
-        vol at a given distance from the forward changes as expiry approaches. Cells need at least 30
-        strike-snapshots; the color scale is capped at 35–90% so the body of the surface stays readable
+        vol at a given moneyness changes as expiry approaches. Cells need at least 30
+        strike-snapshots, and near expiry the strikes only span a narrow band of moneyness, so those rows are narrower; the color scale is capped at 35–90% so the body of the surface stays readable
         (the wings 3–6 hours before expiry exceed 100%).
         """),
         term_chart,
@@ -366,11 +367,11 @@ def _(CLEAN, H, SLOT1, SLOT2, W, alt, iv_snapshots, iv_strikes, mo, np, pd):
 
 @app.cell
 def _(INK2, go, iv_strikes, mo, np, pd):
-    # Rotatable 3D surface: median IV over standard deviations from the forward x hours to expiry (clean snapshots)
-    SD_EDGES = np.arange(-3, 3.01, 0.25)
+    # Rotatable 3D surface: median IV over moneyness (strike / spot) x hours to expiry (clean snapshots)
+    MONEYNESS_EDGES = np.arange(0.85, 1.1501, 0.01)
     _c = iv_strikes[iv_strikes.clean & iv_strikes.iv.notna()]
     _h_edges = [1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120, 144, 168.5]
-    _g = (_c.assign(h=pd.cut(_c.hours_to_expiry, _h_edges), z=pd.cut(_c.sd_from_forward, SD_EDGES))
+    _g = (_c.assign(h=pd.cut(_c.hours_to_expiry, _h_edges), z=pd.cut(_c.moneyness, MONEYNESS_EDGES))
           .groupby(["h", "z"], observed=False).iv.agg(["median", "size"]))
     _grid = _g["median"].where(_g["size"] >= 30).unstack("z")
 
@@ -380,11 +381,11 @@ def _(INK2, go, iv_strikes, mo, np, pd):
         fig = go.Figure(go.Surface(
             x=x, y=y, z=z, colorscale=[[0, "#cde2fb"], [1, "#0d366b"]], cmin=0.35, cmax=0.9,
             colorbar=dict(title="IV", tickformat=".0%"),
-            hovertemplate="SDs from forward %{x:.2f}<br>hours to expiry %{y:.1f}<br>implied vol %{z:.1%}<extra></extra>"))
+            hovertemplate="moneyness %{x:.3f}<br>hours to expiry %{y:.1f}<br>implied vol %{z:.1%}<extra></extra>"))
         fig.update_layout(
             title=title, height=600, margin=dict(l=0, r=0, t=50, b=0), paper_bgcolor="#fcfcfb",
             font=dict(family="system-ui, -apple-system, Segoe UI, sans-serif", color=INK2),
-            scene=dict(xaxis_title="SDs from forward", yaxis=dict(title="hours to expiry", type="log"),
+            scene=dict(xaxis_title="moneyness (strike / spot)", yaxis=dict(title="hours to expiry", type="log"),
                        zaxis=dict(title="implied vol", tickformat=".0%"), camera=dict(eye=dict(x=1.7, y=-1.5, z=0.8))))
         return fig
 
@@ -396,14 +397,14 @@ def _(INK2, go, iv_strikes, mo, np, pd):
               "final hours are visible; cells need at least 30 strike-snapshots."),
         surface_3d,
     ])
-    return SD_EDGES, surface_3d, surface_figure
+    return MONEYNESS_EDGES, surface_3d, surface_figure
 
 
 @app.cell
-def _(SD_EDGES, iv_strikes, np, pd, surface_figure, week_select):
+def _(MONEYNESS_EDGES, iv_strikes, np, pd, surface_figure, week_select):
     # The selected weekly's own surface over its life (follows the weekly dropdown above)
     _w = iv_strikes[(iv_strikes.event_ticker == week_select.value) & iv_strikes.iv.notna()]
-    _g = (_w.assign(h=pd.cut(_w.hours_to_expiry, np.arange(0, 172, 2)), z=pd.cut(_w.sd_from_forward, SD_EDGES))
+    _g = (_w.assign(h=pd.cut(_w.hours_to_expiry, np.arange(0, 172, 2)), z=pd.cut(_w.moneyness, MONEYNESS_EDGES))
           .groupby(["h", "z"], observed=False).iv.median().unstack("z"))
     week_surface_3d = surface_figure([i.mid for i in _g.columns], [i.mid for i in _g.index], _g.to_numpy(),
                                      f"{week_select.value}: implied vol over the contract's life (2-hour bins)")
@@ -465,7 +466,8 @@ def _(WRITE, iv_snapshots, iv_strikes, mo):
     | `iv` | **Vanilla Black-Scholes implied vol** from that option |
     | `digital_iv` | Direct binary implied vol (comparison only; unreliable near the money) |
     | `forward`, `atm_iv`, `clean` | Snapshot's implied forward, ATM vol and clean flag |
-    | `log_moneyness`, `sd_from_forward` | ln(K / forward), and the same in standard deviations (ATM vol · √τ) |
+    | `moneyness` | strike / exchange spot (the axis used in the charts) |
+    | `log_moneyness`, `sd_from_forward` | ln(K / implied forward), and the same in standard deviations (ATM vol · √τ) |
 
     **`data/derived/iv_snapshots.parquet`**: one row per snapshot ({len(iv_snapshots):,} rows): `spot`, `forward`,
     `forward_basis_bps`, `n_strikes`, `n_empty_iv`, `monotone_fixes`, `sigma_low` / `sigma_high` (tail vols),

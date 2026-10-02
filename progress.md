@@ -46,13 +46,13 @@ Each Kalshi strike is a binary call. Inverting each binary price directly is unr
 The method is in `lib/iv.py`, with tests. Result: 32,377 smiles and 878,470 strike-level vols; 82% of snapshots pass the quality checks (fewer within 6 hours of expiry, where the $500 strike spacing becomes coarse). Median at-the-money vol is 42%, in line with BTC's realized vol, rising from about 40% a week out to about 50% in the last hours. Smiles have expensive wings, steepest near expiry, with puts richer than calls.
 
 ## Figures (`outputs/`, in git)
-Written by `03_iv_surface.py` together with its data:
-- `figures/iv_surface_heatmap.png`: median implied vol by distance from the forward and time to expiry
+Written by `03_iv_surface.py` together with its data. Charts use **moneyness = strike / spot**.
+- `figures/iv_surface_heatmap.png`: median implied vol by moneyness and time to expiry
 - `figures/atm_term_structure.png`: at-the-money vol by hours to expiry
 - `figures/atm_vs_realized.png`: Kalshi at-the-money vol vs BTC realized vol, daily
 - `figures/forward_basis.png` and `figures/clean_by_ttm.png`: quality checks
 - `figures/smile_<weekly>_72h.png`, `_24h`, `_6h`: example smiles for the latest weekly
-- `iv_surface_3d.html`: the surface in 3D; open it in a browser to rotate and zoom
+- `iv_surface_3d.html`: the surface in 3D (moneyness × hours to expiry × implied vol); open it in a browser to rotate and zoom
 
 ## Next
 1. Decide what the surface is used for (comparison with option markets, testing Kalshi's pricing, or forecasting volatility).

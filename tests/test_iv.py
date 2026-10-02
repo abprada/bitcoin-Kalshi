@@ -139,3 +139,49 @@ def test_snapshot_iv_counts_monotonicity_fixes():
     D[3], D[4] = D[4], D[3]                                  # one inverted pair in the ladder
     _, snap = iv.snapshot_iv(K, D, np.ones_like(K), F, tau)
     assert snap["monotone_fixes"] == 2
+
+
+# --- winsorizing for the surface ------------------------------------------------------------------
+
+def test_winsorize_by_group_clips_each_group_to_its_own_percentiles():
+    import pandas as pd
+    x = pd.Series([1.0, 2.0, 3.0, 4.0, 100.0, 10.0, 20.0, 30.0, 40.0, 1000.0])
+    g = pd.Series(["a"] * 5 + ["b"] * 5)
+    # 75th percentile: 4 in group a, 40 in group b (linear interpolation); the minimum is untouched
+    out = iv.winsorize_by_group(x, g, lower=0.0, upper=0.75)
+    np.testing.assert_allclose(out, [1, 2, 3, 4, 4, 10, 20, 30, 40, 40])
+
+
+def test_winsorize_by_group_keeps_missing_values_out_of_the_percentiles():
+    import pandas as pd
+    x = pd.Series([1.0, np.nan, 3.0, 100.0])
+    out = iv.winsorize_by_group(x, pd.Series(["a"] * 4), lower=0.0, upper=0.5)   # median of [1, 3, 100] = 3
+    np.testing.assert_allclose(out, [1.0, np.nan, 3.0, 3.0])
+
+
+# --- pooled (shape-normalized) surface ------------------------------------------------------------
+
+def _pool_frame():
+    import pandas as pd
+    # two snapshots in the same time bin: ATM 40% and 80%, same smile shape relative to ATM
+    return pd.DataFrame({
+        "snap": [1, 1, 2, 2],
+        "hours_to_expiry": [30.0, 30.0, 30.0, 30.0],
+        "moneyness": [0.955, 1.005, 0.955, 1.005],
+        "atm_iv": [0.4, 0.4, 0.8, 0.8],
+        "iv_surface": [0.44, 0.40, 1.04, 0.80],      # ratios to ATM: 1.1, 1.0 and 1.3, 1.0
+    })
+
+
+def test_pooled_surface_scales_median_shape_by_median_atm():
+    # cell (0.95, 1.00]: median ratio 1.2 x median ATM 0.6 = 0.72; cell (1.00, 1.01]: 1.0 x 0.6 = 0.6
+    grid = iv.pooled_surface(_pool_frame(), h_edges=[24, 48], m_edges=[0.95, 1.0, 1.01], min_obs=1, min_snaps=1)
+    np.testing.assert_allclose(grid.to_numpy(), [[0.72, 0.60]])
+
+
+def test_pooled_surface_masks_cells_with_too_few_observations():
+    import pandas as pd
+    df = pd.concat([_pool_frame(), pd.DataFrame({"snap": [1], "hours_to_expiry": [30.0], "moneyness": [1.015],
+                                                 "atm_iv": [0.4], "iv_surface": [0.5]})], ignore_index=True)
+    grid = iv.pooled_surface(df, h_edges=[24, 48], m_edges=[0.95, 1.0, 1.01, 1.02], min_obs=2, min_snaps=2)
+    np.testing.assert_allclose(grid.to_numpy(), [[0.72, 0.60, np.nan]])

@@ -13,7 +13,7 @@ Price Kalshi's weekly Bitcoin contracts ("BTC above $K at Friday 5pm ET") with B
 | BTC spot | `00_fetch_spot.py` | 1-minute BTC/USD prices from Coinbase and Bitstamp |
 | Settlement index (BRTI) | `00_fetch_brti.py` | The index the contracts settle on, minute by minute |
 
-Shared code lives in `lib/` (download helpers, cleaning rules, implied-vol math), covered by 100 tests in `tests/`. A collaborator's files in `data/` (Deribit options, WRDS IBIT options, Kalshi hourly data) are kept as they are; their Kalshi prices match ours exactly where the two overlap.
+Shared code lives in `lib/` (download helpers, cleaning rules, implied-vol math), covered by 104 tests in `tests/`. A collaborator's files in `data/` (Deribit options, WRDS IBIT options, Kalshi hourly data) are kept as they are; their Kalshi prices match ours exactly where the two overlap.
 
 ## What we learned (`01_data_exploration.py`)
 - The data is consistent: no duplicates or broken prices, and every strike's result matches its settlement value.
@@ -45,14 +45,23 @@ Each Kalshi strike is a binary call. Inverting each binary price directly is unr
 
 The method is in `lib/iv.py`, with tests. Result: 32,377 smiles and 878,470 strike-level vols; 82% of snapshots pass the quality checks (fewer within 6 hours of expiry, where the $500 strike spacing becomes coarse). Median at-the-money vol is 42%, in line with BTC's realized vol, rising from about 40% a week out to about 50% in the last hours. Smiles have expensive wings, steepest near expiry, with puts richer than calls.
 
+For the surfaces (not the per-strike data), two extra steps keep them clean:
+- Only binary prices between 5¢ and 95¢ are used (at 2–5¢ one tick is 20–50% of the price, so the vol mostly reflects the tick size), and vols are winsorized at the 1st/99th percentile within each time-to-expiry bucket.
+- The smile's *shape* is pooled rather than raw vols: each strike's vol relative to its own snapshot's at-the-money vol, median per cell, times the typical at-the-money vol at that time to expiry. Pooling raw vols made the edges spike, because near expiry far strikes only have usable quotes on very volatile days. This makes the surfaces about 8 times smoother.
+
+Near expiry the surfaces have no wings: far strikes are by then almost certain (priced at 1¢ or 99¢, or quoted on one side only), and those prices carry no volatility information.
+
 ## Figures (`outputs/`, in git)
 Written by `03_iv_surface.py` together with its data. Charts use **moneyness = strike / spot**.
-- `figures/iv_surface_heatmap.png`: median implied vol by moneyness and time to expiry
+- `figures/iv_surface_heatmap.png`: implied vol by moneyness and time to expiry
 - `figures/atm_term_structure.png`: at-the-money vol by hours to expiry
 - `figures/atm_vs_realized.png`: Kalshi at-the-money vol vs BTC realized vol, daily
 - `figures/forward_basis.png` and `figures/clean_by_ttm.png`: quality checks
 - `figures/smile_<weekly>_72h.png`, `_24h`, `_6h`: example smiles for the latest weekly
-- `iv_surface_3d.html`: the surface in 3D (moneyness × hours to expiry × implied vol); open it in a browser to rotate and zoom
+- 3D surfaces (moneyness × time to expiry × implied vol); open them in a browser to rotate and zoom:
+  - `iv_surface_3d.html`: full week
+  - `iv_surface_3d_1d7d.html`: 1 to 7 days to expiry
+  - `iv_surface_3d_1d.html`: last 24 hours
 
 ## Next
 1. Decide what the surface is used for (comparison with option markets, testing Kalshi's pricing, or forecasting volatility).

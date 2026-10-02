@@ -129,7 +129,7 @@ def fetch_window(client: Client, start_ts: int, end_ts: int) -> tuple[dict[int, 
 
 
 def combine(out: Path) -> None:
-    files = sorted(out.glob("*_*.parquet"))
+    files = sorted(out.glob("[0-9]*_*.parquet"))  # monthly files only, not the combined outputs
     if not files:
         return
     df = pd.concat(map(pd.read_parquet, files), ignore_index=True).drop_duplicates("ts").sort_values("ts")

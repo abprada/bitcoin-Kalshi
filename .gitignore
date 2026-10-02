@@ -21,3 +21,9 @@ __pycache__/
 
 # Fetched data (regenerate with the 00_fetch_*.py scripts)
 data/raw/
+
+# marimo session cache
+__marimo__/
+
+# Clean dataset (regenerate with 02_clean_data.py)
+data/clean/

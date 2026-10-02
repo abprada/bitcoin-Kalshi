@@ -947,7 +947,7 @@ def _(mo):
 
     The cleaning now lives in **`02_clean_data.py`**, which applies the rules from sections 8 and 9
     (with a 20¢ spread cap for usable mids), documents each rule with its evidence, and writes the clean
-    dataset to `data/clean/`. The rules are implemented and unit-tested in `cleaning.py`.
+    dataset to `data/clean/`. The rules are implemented and unit-tested in `lib/cleaning.py`.
     """)
     return
 

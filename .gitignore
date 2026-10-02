@@ -27,3 +27,6 @@ __marimo__/
 
 # Clean dataset (regenerate with 02_clean_data.py)
 data/clean/
+
+# Derived outputs (regenerate with 03_iv_surface.py)
+data/derived/

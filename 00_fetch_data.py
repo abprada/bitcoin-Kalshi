@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fetch_utils import Client, time_chunks, write_parquet
+from lib.fetch_utils import Client, time_chunks, write_parquet
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 SERIES = "KXBTCD"

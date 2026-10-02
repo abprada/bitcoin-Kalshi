@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-from fetch_utils import Client, month_windows, write_parquet
+from lib.fetch_utils import Client, month_windows, write_parquet
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 OUT_DIR = Path(__file__).resolve().parent / "data" / "raw" / "brti"

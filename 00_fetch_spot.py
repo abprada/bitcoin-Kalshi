@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fetch_utils import Client, month_windows, time_chunks, write_parquet
+from lib.fetch_utils import Client, month_windows, time_chunks, write_parquet
 
 OUT_DIR = Path(__file__).resolve().parent / "data" / "raw" / "btc_spot"
 COLS = ["ts", "open", "high", "low", "close", "volume"]

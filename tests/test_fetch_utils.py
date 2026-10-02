@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 import pytest
 import requests
 
-import fetch_utils as fu
+from lib import fetch_utils as fu
 
 
 def test_time_chunks_splits_a_week_without_gaps_or_overlap():

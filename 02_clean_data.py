@@ -10,8 +10,8 @@ def _():
     import numpy as np
     import pandas as pd
 
-    import cleaning as cl
-    from fetch_utils import write_parquet
+    from lib import cleaning as cl
+    from lib.fetch_utils import write_parquet
 
     return cl, mo, np, pd, write_parquet
 
@@ -23,7 +23,7 @@ def _(mo):
 
     Builds the clean inputs for Black-Scholes implied-volatility surfaces from the raw data in
     `data/raw/`, applying the rules agreed in `01_data_exploration.py`. Every rule is listed below,
-    implemented in `cleaning.py` (unit-tested in `tests/test_cleaning.py`), and checked in its own
+    implemented in `lib/cleaning.py` (unit-tested in `tests/test_cleaning.py`), and checked in its own
     section with the evidence that justifies it.
 
     | | Rule | Section |

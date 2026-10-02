@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import cleaning as cl
+from lib import cleaning as cl
 
 
 def utc(*args) -> pd.Timestamp:

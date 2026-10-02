@@ -141,3 +141,31 @@ def snapshot_iv(K, mid, weight, F, tau) -> tuple[pd.DataFrame, dict]:
         "strikes_per_sd": F * atm * np.sqrt(tau) / np.median(np.diff(K)) if len(K) > 1 else np.nan,
     }
     return strikes, snap
+
+
+def winsorize_by_group(x, groups, lower=0.01, upper=0.99) -> pd.Series:
+    """Clip x to its own [lower, upper] percentiles within each group; NaNs stay NaN and are ignored."""
+    x = pd.Series(x, dtype=float)
+    g = pd.Series(groups, index=x.index)
+    by = x.groupby(g, observed=True)
+    return x.clip(by.transform(lambda s: s.quantile(lower)), by.transform(lambda s: s.quantile(upper)))
+
+
+def pooled_surface(df: pd.DataFrame, h_edges, m_edges, min_obs: int = 200, min_snaps: int = 20) -> pd.DataFrame:
+    """Shape-normalized surface: median(iv / snapshot ATM vol) per cell x median ATM vol of that time bin.
+
+    Pooling raw vols mixes volatility regimes: near expiry, far strikes only have usable quotes on very
+    volatile days, so raw medians spike at the edges. Pooling each snapshot's smile relative to its own
+    ATM vol and rescaling by the typical ATM vol of the time bin removes that selection effect. Cells
+    with fewer than `min_obs` strike-snapshots or `min_snaps` distinct snapshots are left empty.
+    `df` needs snap, hours_to_expiry, moneyness, atm_iv and iv_surface. Returns time bins x moneyness bins.
+    """
+    d = df[df.iv_surface.notna()].assign(
+        h=lambda x: pd.cut(x.hours_to_expiry, h_edges, include_lowest=True),
+        m=lambda x: pd.cut(x.moneyness, m_edges, include_lowest=True),
+        ratio=lambda x: x.iv_surface / x.atm_iv,
+    ).dropna(subset=["h", "m"])
+    atm = d.drop_duplicates("snap").groupby("h", observed=False).atm_iv.median()
+    g = d.groupby(["h", "m"], observed=False).agg(ratio=("ratio", "median"), n=("ratio", "size"), snaps=("snap", "nunique"))
+    vals = g.ratio * g.index.get_level_values("h").map(atm).to_numpy(dtype=float)
+    return vals.where((g.n >= min_obs) & (g.snaps >= min_snaps)).unstack("m")

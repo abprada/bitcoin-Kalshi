@@ -2,9 +2,10 @@
 
 A Kalshi strike pays $1 if BTC settles above K, so its price is the risk-neutral probability
 D(K) = P(S_T > K), and D(K) = -dC/dK for vanilla calls C. Integrating the ladder of binary prices
-across strikes gives call prices above spot and put prices below spot, which invert for ordinary
-(vanilla) implied vols. Rates are zero and the forward is spot: Kalshi pays interest on
-collateral, and over at most a week discounting is below 0.1 cents.
+across Kalshi's strikes gives call and put prices, which invert for ordinary (vanilla) implied vols.
+Beyond the outermost usable strikes the tails are anchored to Kalshi too (see `snapshot_iv`): only
+Kalshi prices enter, never BTC volatility. Rates are zero: Kalshi pays interest on positions, so
+discounting cancels.
 """
 
 import numpy as np
@@ -32,7 +33,8 @@ def implied_vol(price, F, K, tau, is_call) -> np.ndarray:
     price, K, is_call = np.asarray(price, dtype=float), np.asarray(K, dtype=float), np.asarray(is_call)
     model = lambda s: np.where(is_call, bs_call(F, K, s, tau), bs_put(F, K, s, tau))
     a, b = np.full(price.shape, SIGMA_LO), np.full(price.shape, SIGMA_HI)
-    valid = np.isfinite(price) & (price >= model(a)) & (price <= model(b))
+    intrinsic = np.where(is_call, np.maximum(F - K, 0.0), np.maximum(K - F, 0.0))
+    valid = np.isfinite(price) & (price > intrinsic) & (price >= model(a)) & (price <= model(b))
     for _ in range(_ITERS):
         m = 0.5 * (a + b)
         up = model(m) < price          # price increases with sigma
@@ -82,42 +84,88 @@ def isotonic_decreasing(y, w=None) -> np.ndarray:
     return np.repeat(vals, cnts)
 
 
-def integrate_ladder(K, D, F, tau, sigma_low, sigma_high) -> dict:
+def integrate_ladder(K, D, tail_up=0.0, tail_dn=0.0) -> dict:
     """Call and put prices at every strike from a monotone ladder of binary prices.
 
-    D is linear between strikes. Beyond the outermost strikes the distribution follows Black-Scholes
-    (forward F) at that edge strike's vol, so the tails are closed-form: the call above the top strike
-    and the put below the bottom strike. C - P + K is then the same number at every strike: the mean
-    of the ladder's distribution, i.e. the forward implied by put-call parity (`forward`).
+    D is linear between strikes. `tail_up` is the value of the call at the top strike (the integral of D
+    above it) and `tail_dn` the value of the put at the bottom strike (the integral of 1 - D below it);
+    with the defaults nothing lies beyond the outermost strikes. C - P + K is the same number at every
+    strike: the mean of the distribution, i.e. the forward implied by put-call parity (`forward`).
     """
     K, D = np.asarray(K, dtype=float), np.asarray(D, dtype=float)
     dK = np.diff(K)
     seg_up = 0.5 * (D[:-1] + D[1:]) * dK
     seg_dn = 0.5 * ((1 - D[:-1]) + (1 - D[1:])) * dK
-    call = np.r_[np.cumsum(seg_up[::-1])[::-1], 0.0] + bs_call(F, K[-1], sigma_high, tau)
-    put = np.r_[0.0, np.cumsum(seg_dn)] + bs_put(F, K[0], sigma_low, tau)
+    call = np.r_[np.cumsum(seg_up[::-1])[::-1], 0.0] + tail_up
+    put = np.r_[0.0, np.cumsum(seg_dn)] + tail_dn
     return {"call": call, "put": put, "forward": float(np.mean(call - put + K))}
 
 
-def snapshot_iv(K, mid, weight, F, tau) -> tuple[pd.DataFrame, dict]:
+def _outward_bounds(dist, lower, upper, edge) -> tuple[float, float]:
+    """(lower, upper) bounds on the integral, from the edge strike to the last listed strike, of a function
+    that only falls moving away from the ladder. `dist`: distances of the outer strikes from the edge
+    (increasing); `lower`/`upper`: pointwise bounds there (NaN = none); `edge`: its value at the edge."""
+    ub = np.minimum.accumulate(np.r_[edge, np.where(np.isnan(upper), 1.0, upper)])
+    lb = np.maximum.accumulate(np.where(np.isnan(lower), 0.0, lower)[::-1])[::-1]
+    lb = np.minimum(lb, ub[1:])
+    dK = np.diff(np.r_[0.0, dist])
+    return float((lb * dK).sum()), float((ub[:-1] * dK).sum())
+
+
+def tail_bounds(K, D, K_out, bid_out, ask_out) -> dict:
+    """Model-free bounds on the tail values from Kalshi's other listed strikes beyond the ladder.
+
+    D only falls as the strike rises, so above the ladder D(x) is at most the lowest ask at or below x
+    (and the top of the ladder) and at least the highest bid at or above x; below the ladder the same
+    holds for 1 - D with 1 - bid and 1 - ask. Integrating these step bounds gives (lower, upper) for the
+    call tail above the top strike (`up`) and the put tail below the bottom strike (`dn`), up to the
+    last strike Kalshi lists on each side (`K_up`, `K_dn`). Beyond those, Kalshi's quotes say nothing.
+    """
+    K, D = np.asarray(K, dtype=float), np.asarray(D, dtype=float)
+    K_out, bid_out, ask_out = (np.asarray(x, dtype=float) for x in (K_out, bid_out, ask_out))
+    up = np.argsort(K_out)
+    up = up[K_out[up] > K[-1]]
+    dn = np.argsort(-K_out)
+    dn = dn[K_out[dn] < K[0]]
+    return {
+        "up": _outward_bounds(K_out[up] - K[-1], bid_out[up], ask_out[up], D[-1]),
+        "dn": _outward_bounds(K[0] - K_out[dn], 1 - ask_out[dn], 1 - bid_out[dn], 1 - D[0]),
+        "K_up": float(K_out[up][-1]) if len(up) else float(K[-1]),
+        "K_dn": float(K_out[dn][-1]) if len(dn) else float(K[0]),
+    }
+
+
+def snapshot_iv(K, mid, weight, F, tau, K_out=(), bid_out=(), ask_out=()) -> tuple[pd.DataFrame, dict]:
     """One IV per strike for one snapshot of a weekly's ladder.
 
-    Monotone ladder -> edge vols for the tails -> integrate to calls and puts -> forward implied by
-    put-call parity -> invert out-of-the-money calls (K >= forward) and puts (K < forward) against
-    that forward. `spot` is only the starting point: Kalshi's ladder can be centred a few bps away
-    from exchange spot, and forcing spot would distort cheap wing options. Also returns the direct
-    binary IV per strike and snapshot-level diagnostics.
+    Monotone ladder -> tails -> integrate to calls and puts -> forward implied by put-call parity ->
+    invert out-of-the-money calls (K >= forward) and puts (K < forward) against that forward.
+
+    Tails: beyond each outermost strike, Black-Scholes at that edge strike's own binary-implied vol,
+    clipped to the bounds that Kalshi's other listed strikes (`K_out`, `bid_out`, `ask_out`: quotes
+    too wide or too cheap for the ladder) put on it up to the last strike Kalshi lists; beyond that,
+    the Black-Scholes tail alone (negligible). Only Kalshi prices enter. `F` (exchange spot) is only
+    the starting point and the reference for the reported basis: Kalshi's ladder can be centred a
+    few bps away from exchange spot, and forcing spot would distort cheap wing options. Also returns
+    the direct binary IV per strike and snapshot-level diagnostics.
     """
     spot = float(F)
     o = np.argsort(K)
     K, mid, weight = (np.asarray(x, dtype=float)[o] for x in (K, mid, weight))
     D = isotonic_decreasing(mid, weight)
+    bounds = tail_bounds(K, D, K_out, bid_out, ask_out)
     fwd = spot
     for _ in range(2):  # the tails depend on the forward and the forward on the tails; converges at once
         dig_used = digital_iv(D, fwd, K, tau, sigma_ref=SIGMA_PRIOR)
         finite = np.flatnonzero(np.isfinite(dig_used))
         sig_lo, sig_hi = (dig_used[finite[0]], dig_used[finite[-1]]) if len(finite) else (np.nan, np.nan)
-        ladder = integrate_ladder(K, D, fwd, tau, sig_lo, sig_hi)
+        # model tail between the edge and the last listed strike, kept within Kalshi's bounds, plus beyond
+        raw_up = float(bs_call(fwd, K[-1], sig_hi, tau) - bs_call(fwd, bounds["K_up"], sig_hi, tau))
+        raw_dn = float(bs_put(fwd, K[0], sig_lo, tau) - bs_put(fwd, bounds["K_dn"], sig_lo, tau))
+        cut_up, cut_dn = np.clip(raw_up, *bounds["up"]), np.clip(raw_dn, *bounds["dn"])
+        tail_up = cut_up + float(bs_call(fwd, bounds["K_up"], sig_hi, tau))
+        tail_dn = cut_dn + float(bs_put(fwd, bounds["K_dn"], sig_lo, tau))
+        ladder = integrate_ladder(K, D, tail_up, tail_dn)
         fwd = ladder["forward"]
     F = fwd
     is_call = K >= F
@@ -136,7 +184,9 @@ def snapshot_iv(K, mid, weight, F, tau) -> tuple[pd.DataFrame, dict]:
         "monotone_fixes": int((np.abs(D - mid) > 1e-12).sum()),
         "forward": F,
         "forward_basis_bps": (F / spot - 1) * 1e4,
+        "prob_outside": float((1 - D[0]) + D[-1]),
         "sigma_low": sig_lo, "sigma_high": sig_hi,
+        "tails_clipped": int(abs(cut_up - raw_up) > 1e-6) + int(abs(cut_dn - raw_dn) > 1e-6),
         "atm_iv": atm,
         "strikes_per_sd": F * atm * np.sqrt(tau) / np.median(np.diff(K)) if len(K) > 1 else np.nan,
     }

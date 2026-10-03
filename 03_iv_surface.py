@@ -19,8 +19,12 @@ def _(mo):
        spanning spot.
     2. **Monotone ladder**: binary prices must fall as the strike rises; violations are removed by a
        weighted isotonic fit (weight 1/spread) and counted.
-    3. **Tails**: beyond the outermost strikes the distribution follows Black-Scholes at that edge strike's
-       binary-implied vol, which gives closed-form tail prices.
+    3. **Tails, anchored to Kalshi**: Kalshi says how much probability lies beyond the ladder
+       (`prob_outside`) but not how far out, which is what the tails are worth. Each tail is priced with
+       Black-Scholes at that edge strike's own binary-implied vol, then clipped to the bounds set by
+       Kalshi's other listed strikes (one-sided, too wide, or outside the price band): since D only falls
+       as the strike rises, bids bound it from below and asks from above. Beyond the last strike Kalshi
+       lists, the Black-Scholes tail alone (negligible). Only Kalshi prices enter, never BTC volatility.
     4. **Integrate**: calls C(K) = ∫ above K of D, puts P(K) = ∫ below K of (1 − D), each plus its tail.
     5. **Forward from put-call parity**: C − P + K is the same at every strike, the mean of the ladder's
        distribution. That implied forward is used for the inversion; its gap to exchange spot is reported
@@ -38,7 +42,8 @@ def _(mo):
 
     For comparison each strike also carries the **direct binary IV** (inverting N(d₂), taking the root on
     the same branch as the snapshot's ATM vol). Snapshot diagnostics: monotonicity fixes, forward basis,
-    tail vols, and **strikes per standard deviation**, which drops near expiry as $500 strike spacing
+    probability beyond the outermost strikes, tail vols and whether Kalshi's quotes clipped a tail, and
+    **strikes per standard deviation**, which drops near expiry as $500 strike spacing
     becomes coarse relative to the distribution. The method is implemented in `lib/iv.py` and tested in
     `tests/test_iv.py` (including exact recovery of a flat smile and of a forward away from spot).
 
@@ -115,14 +120,19 @@ def _(mo, pd, write_button):
     MIN_STRIKES = 5
 
     # read weekly by weekly and keep only snapshot minutes, so memory stays small
-    _cols = ["event_ticker", "market_ticker", "strike", "ts", "tau_years", "mid", "spread", "quote_age_min", "spot", "usable"]
-    _frames = []
+    _cols = ["event_ticker", "market_ticker", "strike", "ts", "tau_years", "bid", "ask", "mid", "spread", "quote_age_min",
+             "spot", "exchange_open", "usable"]
+    _frames, _outer = [], []
     for _f in sorted((CLEAN / "kalshi_weekly_quotes").glob("*.parquet")):
         _d = pd.read_parquet(_f, columns=_cols)
-        _d = _d[_d.usable & (_d.ts.dt.minute % SNAPSHOT_EVERY_MIN == 0) & (_d.quote_age_min <= MAX_QUOTE_AGE_MIN)
-                & _d.mid.between(*PRICE_BAND) & (_d.tau_years * 8760 >= MIN_HOURS_TO_EXPIRY)]
-        _frames.append(_d.drop(columns="usable"))
+        _d = _d[_d.exchange_open & (_d.ts.dt.minute % SNAPSHOT_EVERY_MIN == 0) & (_d.quote_age_min <= MAX_QUOTE_AGE_MIN)
+                & (_d.tau_years * 8760 >= MIN_HOURS_TO_EXPIRY)]
+        _ladder = _d.usable & _d.mid.between(*PRICE_BAND)
+        _frames.append(_d[_ladder].drop(columns=["bid", "ask", "exchange_open", "usable"]))
+        # every other quoted strike (one-sided, too wide, or outside the price band) bounds the tails (method step 3)
+        _outer.append(_d.loc[~_ladder & (_d.bid.notna() | _d.ask.notna()), ["event_ticker", "ts", "strike", "bid", "ask"]])
     quotes = pd.concat(_frames, ignore_index=True)
+    outer_quotes = pd.concat(_outer, ignore_index=True)
 
     _s = quotes.groupby(["event_ticker", "ts"]).agg(n=("strike", "size"), spot=("spot", "first"),
                                                    lo=("strike", "min"), hi=("strike", "max"))
@@ -134,11 +144,11 @@ def _(mo, pd, write_button):
     {MIN_STRIKES} usable strikes and {int(((_s.n >= MIN_STRIKES) & ~_spans).sum()):,} whose strikes do not span spot.
     Median usable strikes per kept snapshot: {snapshots.n.median():.0f}.
     """)
-    return CLEAN, DERIVED, ROOT, WRITE, quotes, snapshots
+    return CLEAN, DERIVED, ROOT, WRITE, outer_quotes, quotes, snapshots
 
 
 @app.cell
-def _(DERIVED, WRITE, iv, mo, np, pd, quotes, snapshots, write_parquet):
+def _(DERIVED, WRITE, iv, mo, np, outer_quotes, pd, quotes, snapshots, write_parquet):
     # One integrated smile per snapshot (iv.snapshot_iv), collected into a strike table and a snapshot table
     _q = quotes.merge(snapshots[["event_ticker", "ts"]], on=["event_ticker", "ts"]).sort_values(["event_ticker", "ts", "strike"])
     _ev, _ts = _q.event_ticker.to_numpy(), _q.ts.to_numpy()
@@ -147,12 +157,20 @@ def _(DERIVED, WRITE, iv, mo, np, pd, quotes, snapshots, write_parquet):
     _K, _M = _q.strike.to_numpy(float), _q.mid.to_numpy(float)
     _Wt, _S, _T = 1 / _q.spread.to_numpy(float), _q.spot.to_numpy(float), _q.tau_years.to_numpy(float)
     _tickers = _q.market_ticker.to_numpy()
+    # Kalshi's other listed strikes at each snapshot, for the tail bounds
+    _o = outer_quotes.merge(snapshots[["event_ticker", "ts"]], on=["event_ticker", "ts"]).sort_values(["event_ticker", "ts", "strike"])
+    _oev, _ots = _o.event_ticker.to_numpy(), _o.ts.to_numpy()
+    _os = np.flatnonzero(np.r_[True, (_oev[1:] != _oev[:-1]) | (_ots[1:] != _ots[:-1])]) if len(_o) else np.array([], dtype=int)
+    _outer_at = {(_oev[_x], _ots[_x]): (_x, _y) for _x, _y in zip(_os, np.r_[_os[1:], len(_o)])}
+    _OK, _OB, _OA = _o.strike.to_numpy(float), _o.bid.to_numpy(float), _o.ask.to_numpy(float)
 
     _strike_parts, _snap_rows = [], []
     for _i in mo.status.progress_bar(range(len(_starts)), title="Building smiles",
                                      subtitle=f"{len(_starts):,} snapshots, one per weekly per 15 minutes"):
         _a, _b = _starts[_i], _ends[_i]
-        _st, _sn = iv.snapshot_iv(_K[_a:_b], _M[_a:_b], _Wt[_a:_b], _S[_a], _T[_a])
+        _x, _y = _outer_at.get((_ev[_a], _ts[_a]), (0, 0))
+        _st, _sn = iv.snapshot_iv(_K[_a:_b], _M[_a:_b], _Wt[_a:_b], _S[_a], _T[_a],
+                                  K_out=_OK[_x:_y], bid_out=_OB[_x:_y], ask_out=_OA[_x:_y])
         _st["snap"] = _i
         _st["market_ticker"] = _tickers[_a:_b][np.argsort(_K[_a:_b])]
         _strike_parts.append(_st)
@@ -285,7 +303,7 @@ def _(CONTEXT, MUTED, SLOT1, W, alt, iv_strikes, pd):
             f"{row.event_ticker} · {row.hours_to_expiry:.1f}h to expiry · ATM {row.atm_iv:.1%} · "
             f"forward basis {row.forward_basis_bps:+.1f} bps · {'clean' if row.clean else 'not clean'}"))
         caption = (f"{int(row.n_strikes)} usable strikes · {int(row.monotone_fixes)} monotonicity fixes · "
-                   f"{row.strikes_per_sd:.1f} strikes per standard deviation · tail vols {row.sigma_low:.0%} / {row.sigma_high:.0%} · "
+                   f"{row.strikes_per_sd:.1f} strikes per standard deviation · {row.prob_outside:.0%} of probability in the tails · tail vols {row.sigma_low:.0%} / {row.sigma_high:.0%} · "
                    f"spot {row.spot:,.0f}, implied forward {row.forward:,.0f}")
         return chart, caption
 
@@ -508,7 +526,8 @@ def _(WRITE, iv_snapshots, iv_strikes, mo):
     | `log_moneyness`, `sd_from_forward` | ln(K / implied forward), and the same in standard deviations (ATM vol · √τ) |
 
     **`data/derived/iv_snapshots.parquet`**: one row per snapshot ({len(iv_snapshots):,} rows): `spot`, `forward`,
-    `forward_basis_bps`, `n_strikes`, `n_empty_iv`, `monotone_fixes`, `sigma_low` / `sigma_high` (tail vols),
+    `forward_basis_bps`, `n_strikes`, `n_empty_iv`, `monotone_fixes`, `prob_outside` (probability beyond the outermost strikes, priced by the tails),
+    `sigma_low` / `sigma_high` (tail vols), `tails_clipped` (0–2 tails cut to Kalshi's outer-strike bounds),
     `atm_iv`, `strikes_per_sd`, `clean` (ATM vol exists, ≥ 2 strikes per standard deviation, |basis| ≤ 25 bps).
 
     **`outputs/`** (committed to git): `figures/iv_surface_heatmap.png`, `atm_term_structure.png`,

@@ -13,7 +13,7 @@
 - A binary is the slope of the call price across strikes, so adding up the binary prices across strikes gives call and put prices.
 - Steps:
   1. Clean the ladder so prices fall as the strike rises.
-  2. Add Black-Scholes tails beyond the outer strikes.
+  2. Add a tail beyond each outermost strike: Black-Scholes at that edge strike's own Kalshi vol, kept within the bounds set by Kalshi's other listed strikes (bids from below, asks from above). No BTC vol enters.
   3. Integrate to get calls above the forward and puts below it.
   4. Take the forward from put-call parity.
   5. Invert each option with standard Black-Scholes.
@@ -21,12 +21,13 @@
 
 ## What we see
 32k smiles (one every 15 minutes), 82% passing quality checks:
-- ATM vol is about 42%, in line with realized vol;
+- ATM vol is about 43%;
 - vol rises toward expiry, from about 40% a week out to about 50% in the final hours;
 - smiles have expensive wings, with puts richer than calls.
 
 ## Caveats
-Within about 6 hours of expiry the $500 strike spacing is too coarse to trust, and the first weeks (Oct 2025) are thin.
+- Within about 6 hours of expiry the $500 strike spacing is too coarse to trust, and the first weeks (Oct 2025) are thin.
+- About 5–6% of the probability lies beyond the outermost usable strikes. Its location is a modelling choice (Black-Scholes shape), constrained by Kalshi's own outer quotes. Dropping the tails instead would bias vols low by about 1.5–2 points at the money and 5–7 in the wings.
 
 ## Where
 `03_iv_surface.py` (method in `lib/iv.py`), with figures in `outputs/`. The rotatable 3D surface is `outputs/iv_surface_3d.html`.

@@ -42,6 +42,12 @@ def test_implied_vol_is_nan_outside_no_arbitrage_bounds():
     assert np.isnan(out).all()
 
 
+def test_implied_vol_is_nan_for_a_worthless_option():
+    # a zero price has no positive vol; it must not come back as the bottom of the search range
+    out = iv.implied_vol(np.array([0.0, 0.0]), 84_000.0, np.array([95_000.0, 70_000.0]), 1 / 365, np.array([True, False]))
+    assert np.isnan(out).all()
+
+
 # --- binary implied vol (direct inversion of N(d2)) -----------------------------------------------
 
 def test_digital_iv_in_the_money_has_a_unique_root():
@@ -87,27 +93,68 @@ def test_isotonic_decreasing_leaves_monotone_ladders_unchanged():
 
 # --- integration: binaries -> calls and puts --------------------------------------------------------
 
+def test_integrate_ladder_without_tails_ends_at_the_listed_strikes():
+    # nothing beyond the outermost strikes: the top call and the bottom put are worth zero
+    K, D = np.array([100.0, 110.0, 120.0]), np.array([0.8, 0.5, 0.1])
+    out = iv.integrate_ladder(K, D)
+    np.testing.assert_allclose(out["call"], [0.65 * 10 + 0.3 * 10, 0.3 * 10, 0.0])
+    np.testing.assert_allclose(out["put"], [0.0, 0.35 * 10, 0.35 * 10 + 0.7 * 10])
+    assert out["forward"] == pytest.approx(100.0 + 9.5)      # bottom strike + area under the ladder
+
+
+def test_integrate_ladder_adds_tail_values_to_every_call_and_put():
+    K, D = np.array([100.0, 110.0, 120.0]), np.array([0.8, 0.5, 0.1])
+    base, out = iv.integrate_ladder(K, D), iv.integrate_ladder(K, D, tail_up=2.0, tail_dn=0.5)
+    np.testing.assert_allclose(out["call"], base["call"] + 2.0)
+    np.testing.assert_allclose(out["put"], base["put"] + 0.5)
+    assert out["forward"] == pytest.approx(base["forward"] + 2.0 - 0.5)
+
+
 def test_integrate_ladder_satisfies_parity_at_its_implied_forward():
     # C - P = (mean of the ladder's distribution) - K at every strike: that mean is the implied forward
-    F, tau = 84_000.0, 1 / 365
     K = np.array([82_000.0, 83_000.0, 84_000.0, 85_000.0, 86_000.0])
     D = np.array([0.93, 0.78, 0.52, 0.27, 0.09])          # any monotone ladder
-    out = iv.integrate_ladder(K, D, F, tau, sigma_low=0.5, sigma_high=0.5)
+    out = iv.integrate_ladder(K, D, tail_up=12.0, tail_dn=7.0)
     np.testing.assert_allclose(out["call"] - out["put"], out["forward"] - K, atol=1e-8)
 
 
-def test_integrate_ladder_recovers_black_scholes_prices_on_a_flat_smile():
-    F, tau, sig = 84_000.0, 1 / 365, 0.45
-    K = np.arange(79_000.0, 89_001.0, 250.0)
-    out = iv.integrate_ladder(K, digital(F, K, sig, tau), F, tau, sigma_low=sig, sigma_high=sig)
+def test_integrate_ladder_recovers_black_scholes_prices_when_the_ladder_spans_the_distribution():
+    F, tau, sig = 84_000.0, 1 / 365, 0.45                  # one sd = $1,979; ladder covers +/- 6 sd
+    K = np.arange(72_000.0, 96_001.0, 250.0)
+    out = iv.integrate_ladder(K, digital(F, K, sig, tau))
     assert abs(out["forward"] - F) / F * 1e4 < 1.0         # implied forward = spot to within 1 bp
     np.testing.assert_allclose(out["call"], iv.bs_call(F, K, sig, tau), rtol=0.01, atol=1.0)
+
+
+# --- bounds on the tails from Kalshi's other listed strikes -----------------------------------------
+
+def test_tail_bounds_from_kalshis_outer_quotes():
+    # ladder 80-120; Kalshi also lists 60, 70 below and 130, 140 above (NaN = no bid / no ask)
+    K, D = np.array([80.0, 100.0, 120.0]), np.array([0.9, 0.5, 0.1])
+    K_out = np.array([60.0, 70.0, 130.0, 140.0])
+    bid = np.array([0.99, 0.93, 0.04, np.nan])
+    ask = np.array([np.nan, 0.97, 0.06, 0.02])
+    b = iv.tail_bounds(K, D, K_out, bid, ask)
+    # above: D <= running min of asks moving out [0.10, 0.06, 0.02], D >= farthest bids [0.04, 0]
+    assert b["up"] == pytest.approx((0.04 * 10 + 0.0 * 10, 0.10 * 10 + 0.06 * 10))
+    assert b["K_up"] == 140.0
+    # below, for 1 - D: upper bounds 1 - bid [0.10, 0.07, 0.01], lower bounds 1 - ask [0.03, 0]
+    assert b["dn"] == pytest.approx((0.03 * 10 + 0.0 * 10, 0.10 * 10 + 0.07 * 10))
+    assert b["K_dn"] == 60.0
+
+
+def test_tail_bounds_without_outer_quotes_cover_nothing():
+    K, D = np.array([80.0, 100.0, 120.0]), np.array([0.9, 0.5, 0.1])
+    b = iv.tail_bounds(K, D, np.array([]), np.array([]), np.array([]))
+    assert b["up"] == (0.0, 0.0) and b["dn"] == (0.0, 0.0)
+    assert (b["K_dn"], b["K_up"]) == (80.0, 120.0)
 
 
 # --- one snapshot end to end ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("step, tol", [(250.0, 0.003), (500.0, 0.01)])
 def test_snapshot_iv_recovers_a_flat_45pct_smile(step, tol):
+    # no outer quotes: the tails are the edge strikes' own Black-Scholes tails
     F, tau, sig = 84_000.0, 1 / 365, 0.45
     K = np.arange(79_000.0, 89_001.0, step)
     strikes, snap = iv.snapshot_iv(K, digital(F, K, sig, tau), np.ones_like(K), F, tau)
@@ -116,8 +163,37 @@ def test_snapshot_iv_recovers_a_flat_45pct_smile(step, tol):
     # forward (off by cents) moves the direct binary IV slightly there
     np.testing.assert_allclose(strikes["digital_iv"], sig, atol=1e-3)
     assert snap["monotone_fixes"] == 0
+    assert snap["tails_clipped"] == 0
     assert snap["atm_iv"] == pytest.approx(sig, abs=tol)
     assert abs(snap["forward_basis_bps"]) < 1.0
+
+
+def test_snapshot_iv_keeps_a_tail_that_kalshis_outer_quotes_allow():
+    F, tau, sig = 84_000.0, 1 / 365, 0.45
+    K = np.arange(79_000.0, 89_001.0, 500.0)
+    K_out = np.r_[np.arange(75_000.0, 79_000.0, 500.0), np.arange(89_500.0, 93_001.0, 500.0)]
+    D_out = digital(F, K_out, sig, tau)
+    strikes, snap = iv.snapshot_iv(K, digital(F, K, sig, tau), np.ones_like(K), F, tau,
+                                   K_out=K_out, bid_out=0.5 * D_out, ask_out=np.minimum(1.5 * D_out, 1.0))
+    assert snap["tails_clipped"] == 0
+    np.testing.assert_allclose(strikes["iv"], sig, atol=0.01)
+
+
+def test_snapshot_iv_clips_the_tail_to_kalshis_outer_asks():
+    # Kalshi offers the strikes above the ladder far below the Black-Scholes tail: the call tail is cut
+    # to what those asks allow, so the top-edge vol falls, while vols near the money barely move
+    F, tau, sig = 84_000.0, 1 / 365, 0.45
+    K = np.arange(79_000.0, 89_001.0, 500.0)
+    K_out = np.arange(89_500.0, 93_001.0, 500.0)
+    ask = 0.1 * digital(F, K_out, sig, tau)
+    strikes, snap = iv.snapshot_iv(K, digital(F, K, sig, tau), np.ones_like(K), F, tau,
+                                   K_out=K_out, bid_out=np.full_like(K_out, np.nan), ask_out=ask)
+    assert snap["tails_clipped"] == 1
+    # between the top strike and the next listed one the bound can't beat D(top strike) x spacing,
+    # so the cut is at most ~25% of this tail: about 2 vol pts at the top edge
+    assert strikes["iv"].iloc[-1] < sig - 0.01
+    near = np.abs(K - F) <= F * sig * np.sqrt(tau)
+    np.testing.assert_allclose(strikes["iv"][near], sig, atol=0.01)
 
 
 def test_snapshot_iv_infers_a_forward_away_from_spot_without_breaking_the_wings():
@@ -130,6 +206,14 @@ def test_snapshot_iv_infers_a_forward_away_from_spot_without_breaking_the_wings(
     assert snap["forward_basis_bps"] == pytest.approx(20.0, abs=1.5)
     assert strikes["iv"].notna().all()
     np.testing.assert_allclose(strikes["iv"], sig, atol=0.02)
+
+
+def test_snapshot_iv_reports_the_probability_beyond_the_ladder():
+    # P(S_T < bottom strike) + P(S_T > top strike): the part of the distribution priced by the tails
+    K = np.array([82_000.0, 83_000.0, 84_000.0, 85_000.0, 86_000.0])
+    D = np.array([0.93, 0.78, 0.52, 0.27, 0.09])
+    _, snap = iv.snapshot_iv(K, D, np.ones_like(K), 84_000.0, 1 / 365)
+    assert snap["prob_outside"] == pytest.approx(0.07 + 0.09)
 
 
 def test_snapshot_iv_counts_monotonicity_fixes():

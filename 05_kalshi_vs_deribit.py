@@ -40,7 +40,8 @@ def _(mo):
       each Kalshi strike, and only **inside** the range of strikes Deribit traded (no extrapolation).
     - **Expiry.** Deribit's Friday option expires at 08:00 UTC, Kalshi's at 5pm ET, about 13 hours later. Deribit's
       vol is stretched to Kalshi's horizon with the hour-of-week variance profile from `04` (the extra Friday hours are
-      busier than average). Results are shown **with and without** this adjustment, because it is a model.
+      busier than average); section 2 walks through it. Results are shown **with and without** this adjustment,
+      because it is a model.
 
     The code is in `lib/compare.py` and `lib/deribit.py`, tested in `tests/test_compare.py` and `tests/test_deribit.py`.
     Needs `03_iv_surface.py` to have run. Writes nothing.
@@ -77,75 +78,13 @@ def _(alt):
 
 
 @app.cell
-def _(compare, deribit, mo, np, pd):
+def _(compare, mo):
+    # All the matching lives in lib/compare.py (build_comparison), shared with 06_results_summary.py
     ROOT = mo.notebook_dir()
-    DATA, CLEAN, DERIVED = ROOT / "data", ROOT / "data" / "clean", ROOT / "data" / "derived"
-    WINDOW_MIN = 15          # Deribit trades within this many minutes of a Kalshi snapshot form its smile
-    MIN_DERIBIT_STRIKES = 3  # and they must cover at least 3 strikes, on both sides of the money
-
-    # Deribit: afternoon trades in Friday expiries (the only ones whose date matches a Kalshi weekly)
-    trades = deribit.load_trades(DATA / "deribit_btc_options.csv.gz")
-    trades = trades[(trades.window == "us_afternoon") & (trades.expiry.dt.dayofweek == 4)
-                    & trades.iv_mark.notna() & (trades.tau_years > 0)]
-    by_expiry = {e: g for e, g in trades.groupby("expiry")}
-
-    # Kalshi: clean snapshots in the same afternoon window, before the Deribit option with the same date expires
-    snaps = pd.read_parquet(DERIVED / "iv_snapshots.parquet")
-    snaps["expiry"] = snaps.ts + pd.to_timedelta(snaps.hours_to_expiry, unit="h")
-    _minute = snaps.ts.dt.hour * 60 + snaps.ts.dt.minute
-    snaps = snaps[snaps.clean & _minute.between(19 * 60 + 30, 22 * 60 + 29)].copy()
-    snaps["deribit_expiry"] = (pd.to_datetime(snaps.expiry.dt.date.astype(str)).dt.tz_localize("UTC")
-                               + pd.Timedelta(hours=8))
-    snaps = snaps[snaps.ts < snaps.deribit_expiry]
-
-    _spot = pd.read_parquet(CLEAN / "btc_spot_1m.parquet", columns=["ts", "spot"]).set_index("ts").spot
-    hour_profile = deribit.hourly_variance(_spot)
-    _k = pd.read_parquet(DERIVED / "iv_strikes.parquet",
-                         columns=["snap", "strike", "mid", "D_used", "iv", "spot", "tau_years"],
-                         filters=[("snap", "in", snaps.snap.tolist())])
-    _k_by_snap = {s: g for s, g in _k.groupby("snap")}
-
-    _rows, smiles = [], {}
-    for _s in snaps.itertuples():
-        _g = by_expiry.get(_s.deribit_expiry)
-        if _g is None or _s.snap not in _k_by_snap:
-            continue
-        _sm = compare.smile_from_trades(_g[(_g.ts - _s.ts).abs() <= pd.Timedelta(minutes=WINDOW_MIN)])
-        if len(_sm) < MIN_DERIBIT_STRIKES or not (_sm.log_moneyness.min() < 0 < _sm.log_moneyness.max()):
-            continue
-        _kk = _k_by_snap[_s.snap]
-        _F, _tau_k = float(_kk.spot.iloc[0]), float(_kk.tau_years.iloc[0])
-        _tau_d = (_s.deribit_expiry - _s.ts).total_seconds() / (365 * 86_400)
-        _ratio = deribit.horizon_vol_ratio(_s.ts, _s.expiry, _s.deribit_expiry, hour_profile)
-        _K = _kk.strike.to_numpy()
-        _vol = compare.interp_vol(np.log(_K / _F), _sm.log_moneyness, _sm.vol)
-        smiles[_s.snap] = dict(smile=_sm, F=_F, tau_k=_tau_k, tau_d=_tau_d, ratio=_ratio, ts=_s.ts,
-                               event_ticker=_s.event_ticker, kalshi_hours=_s.hours_to_expiry)
-        _rows.append(_kk.assign(
-            ts=_s.ts, event_ticker=_s.event_ticker, kalshi_hours=_s.hours_to_expiry,
-            deribit_hours=_tau_d * 8_760, horizon_ratio=_ratio, n_deribit_strikes=len(_sm),
-            deribit_vol=_vol, deribit_vol_adj=_vol * _ratio,
-            deribit_digital_adj=compare.digital_from_smile(_K, _F, _tau_k, _sm.log_moneyness, _sm.vol * _ratio),
-            deribit_digital_raw=compare.digital_from_smile(_K, _F, _tau_d, _sm.log_moneyness, _sm.vol),
-        ))
-    matched = pd.concat(_rows, ignore_index=True)
-
-    # Kalshi's bid and ask at each matched snapshot, from the clean quotes
-    _q = []
-    for _ev, _g in matched.groupby("event_ticker"):
-        _qq = pd.read_parquet(CLEAN / "kalshi_weekly_quotes" / f"{_ev}.parquet", columns=["strike", "ts", "bid", "ask"])
-        _q.append(_qq[_qq.ts.isin(_g.ts.unique())].assign(event_ticker=_ev))
-    matched = matched.merge(pd.concat(_q, ignore_index=True), on=["event_ticker", "ts", "strike"], how="left")
-    matched["log_moneyness"] = np.log(matched.strike / matched.spot)
-    matched["moneyness_bucket"] = pd.cut(matched.log_moneyness, [-0.15, -0.05, -0.02, -0.005, 0.005, 0.02, 0.05, 0.15],
-                                         labels=["5–15% below", "2–5% below", "0.5–2% below", "within 0.5%",
-                                                 "0.5–2% above", "2–5% above", "5–15% above"])
-    matched["tte_bucket"] = pd.cut(matched.kalshi_hours, [24, 48, 72, 120, 170],
-                                   labels=["1–2 days", "2–3 days", "3–5 days", "5–7 days"])
-    matched["vol_gap_raw"] = 100 * (matched.iv - matched.deribit_vol)
-    matched["vol_gap_adj"] = 100 * (matched.iv - matched.deribit_vol_adj)
-    matched["price_gap_c"] = 100 * (matched.mid - matched.deribit_digital_adj)
-    return DERIVED, matched, smiles, snaps, trades
+    DERIVED = ROOT / "data" / "derived"
+    _c = compare.build_comparison(ROOT)
+    matched, smiles, snaps, trades, hour_profile = _c["matched"], _c["smiles"], _c["snaps"], _c["trades"], _c["hour_profile"]
+    return DERIVED, hour_profile, matched, smiles, snaps, trades
 
 
 @app.cell
@@ -197,6 +136,115 @@ def _(DERIVED, compare, mo, np, pd, snaps, trades):
 
 
 @app.cell
+def _(H, SLOT1, SLOT2, W, alt, compare, deribit, hour_profile, matched, mo, np, pd, smiles):
+    # Walk through the 13-hour adjustment on the worked example's snapshot (Monday June 29, 20:30 UTC)
+    _ts = pd.Timestamp("2026-06-29 20:30", tz="UTC")
+    _snap = int(matched[matched.ts == _ts].snap.iloc[0])
+    _s = smiles[_snap]
+    _h_k, _h_d = float(_s["kalshi_hours"]), _s["tau_d"] * 8_760
+    _kexp, _dexp = _ts + pd.Timedelta(hours=_h_k), _ts + pd.Timedelta(hours=_h_d)
+
+    # hour by hour, how busy each hour usually is (1 = an average hour of the week)
+    _avg = hour_profile.mean()
+    _hours = pd.date_range(_ts.floor("h"), _kexp, freq="h", inclusive="left")
+    _blocks = pd.DataFrame({"hour": _hours,
+                            "busy": hour_profile.iloc[_hours.dayofweek * 24 + _hours.hour].to_numpy() / _avg})
+    _blocks["period"] = np.where(_blocks.hour < _dexp.floor("h"), "both markets (to Deribit's expiry)",
+                                 "Kalshi only: the 13 extra hours")
+    timeline_chart = (
+        alt.Chart(_blocks).mark_bar(width=4)
+        .encode(x=alt.X("hour:T", title=None, axis=alt.Axis(format="%a %H:%M", labelAngle=0, tickCount=8)),
+                y=alt.Y("busy:Q", title="how much BTC usually moves (× average hour)"),
+                color=alt.Color("period:N", title=None, scale=alt.Scale(
+                    domain=["both markets (to Deribit's expiry)", "Kalshi only: the 13 extra hours"], range=[SLOT1, SLOT2])),
+                tooltip=[alt.Tooltip("hour:T", format="%a %H:%M UTC"), alt.Tooltip("busy:Q", format=".2f"), "period:N"])
+        .properties(title="Every hour from Monday 20:30 UTC to Kalshi's expiry, by how much BTC usually moves then",
+                    width=W, height=H)
+    )
+
+    # the numbers
+    _units_d = deribit.expected_variance(_ts, _dexp, hour_profile) / _avg
+    _units_k = deribit.expected_variance(_ts, _kexp, hour_profile) / _avg
+    _ratio = deribit.horizon_vol_ratio(_ts, _kexp, _dexp, hour_profile)
+    _sig_d = float(compare.interp_vol(0.0, _s["smile"].log_moneyness, _s["smile"].vol))   # Deribit ATM vol
+    _move_d = _sig_d * np.sqrt(_h_d / 8_760)
+    _move_k = _move_d * np.sqrt(_units_k / _units_d)
+    _sig_k = _move_k / np.sqrt(_h_k / 8_760)
+    steps = pd.DataFrame([
+        ("Clock hours from now to expiry", f"{_h_d:.1f}", f"{_h_k:.1f}"),
+        ("Worth in 'average hours' of BTC movement", f"{_units_d:.1f}", f"{_units_k:.1f}"),
+        ("Typical move by expiry (1 standard deviation)", f"±{_move_d:.2%}  (Deribit's {_sig_d:.1%} × √({_h_d:.1f} h / 1 yr))",
+         f"±{_move_k:.2%}  (= ±{_move_d:.2%} × √({_units_k:.1f} / {_units_d:.1f}))"),
+        ("Same move quoted as a yearly vol", f"{_sig_d:.1%}", f"{_sig_k:.1%}  (= ±{_move_k:.2%} ÷ √({_h_k:.1f} h / 1 yr))"),
+    ], columns=["", "Deribit, to Fri 08:00 UTC", "Stretched to Kalshi, to Fri 5pm ET"])
+
+    _k = matched[(matched.ts == _ts) & matched.strike.isin([60_000.0, 60_500.0, 61_000.0, 61_500.0, 62_000.0])]
+    prices = pd.DataFrame({
+        "strike": _k.strike.map("{:,.0f}".format),
+        "Kalshi bid / ask": [f"{b * 100:.0f} / {a * 100:.0f}¢" for b, a in zip(_k.bid, _k.ask)],
+        "Deribit vol as traded": (100 * _k.deribit_vol).round(1).astype(str) + "%",
+        "Deribit vol stretched": (100 * _k.deribit_vol_adj).round(1).astype(str) + "%",
+        "Deribit price, to its own expiry": (100 * _k.deribit_digital_raw).round(1).astype(str) + "¢",
+        "Deribit price, stretched to Kalshi's": (100 * _k.deribit_digital_adj).round(1).astype(str) + "¢",
+    })
+    mo.vstack([
+        mo.md(f"""
+        ## 2 · How the 13 extra hours are handled
+
+        **The problem.** Deribit's Friday option asks "will BTC be above K at **08:00 UTC** Friday?". Kalshi's asks
+        the same about **5pm ET** (21:00 UTC in summer). Those are different questions: BTC has 13 more hours to move
+        before Kalshi settles, so Kalshi's range of outcomes is wider. Deribit has no option that ends when Kalshi's
+        does, so there is no Deribit *price* for Kalshi's question.
+
+        **The idea.** Prices cannot be moved to another expiry, but volatility can, because **variance adds up over
+        time**: the variance of BTC's move to Friday 5pm is the variance to Friday 08:00 plus the variance of the 13
+        hours after it. So we take the movement Deribit expects up to its expiry, add the movement the 13 extra hours
+        usually bring, and convert the total back to a yearly vol for Kalshi's horizon.
+
+        **The catch.** The 13 extra hours are not ordinary hours. They are Friday's US trading day, when BTC tends to
+        move a lot (orange). Below, each bar is one hour from the example snapshot to Kalshi's expiry, and its height
+        is how much BTC moved in that hour of the week on average over our year of minute data (`lib/deribit.py`,
+        `hourly_variance`). Weekend and late-night hours are quiet; US daytime hours are busy.
+        """),
+        timeline_chart,
+        mo.md(f"""
+        **Step by step for this snapshot** (Monday June 29, 20:30 UTC, ATM):
+
+        1. Count each period in "average hours" of movement, weighting every hour by its bar above. Deribit's
+           {_h_d:.1f} clock hours are worth **{_units_d:.1f}** average hours. Kalshi's {_h_k:.1f} are worth
+           **{_units_k:.1f}**: the 13 extra hours count as **{_units_k - _units_d:.1f}**, because they are busy ones.
+        2. Deribit's ATM vol of {_sig_d:.1%} over {_h_d:.1f} hours means a typical move of **±{_move_d:.2%}** by
+           Friday 08:00.
+        3. Variance grows with the average hours, so by Kalshi's expiry the typical move is
+           ±{_move_d:.2%} × √({_units_k:.1f} / {_units_d:.1f}) = **±{_move_k:.2%}**.
+        4. Quoted per year over Kalshi's {_h_k:.1f} hours, that is **{_sig_k:.1%}**: Deribit's vol × {_ratio:.3f}.
+           This is the "stretched" Deribit vol compared with Kalshi (`horizon_vol_ratio`).
+        """),
+        mo.ui.table(steps, selection=None, show_download=False, pagination=False),
+        mo.md(f"""
+        The yearly vol goes up, not just the move, because the extra hours are busier than the hours already in
+        Deribit's period ({(_units_k - _units_d) / (_h_k - _h_d):.2f} average hours per clock hour, against
+        {_units_d / _h_d:.2f}). If they were just as busy, the move would grow but the yearly vol would stay at
+        {_sig_d:.1%}.
+
+        **The same factor ({_ratio:.3f}) is applied to Deribit's whole smile** for this snapshot, and the stretched
+        vols then price Kalshi's contracts over Kalshi's own time to expiry:
+        """),
+        mo.ui.table(prices, selection=None, show_download=False, pagination=False),
+        mo.md(f"""
+        Across all matched snapshots the factor ranges from {matched.horizon_ratio.min():.3f} (a week out, when 13 hours
+        are a small share) to {matched.horizon_ratio.max():.3f} (a day out, when they are a large share).
+
+        **What this assumes:** Deribit's view of how volatile the week is carries over to the 13 extra hours, in the
+        same proportion as history (busy hours stay 1.6× as busy). If traders expect an unusually calm or wild
+        Friday, this is off. That is why every result below is shown both ways. A more market-based alternative is
+        to interpolate between Deribit's Friday 08:00 and Saturday 08:00 expiries, which bracket Kalshi's.
+        """),
+    ])
+    return
+
+
+@app.cell
 def _(matched, mo, pd):
     _have = matched.deribit_vol.notna()
     _ba = matched.deribit_digital_adj.notna() & matched.bid.notna() & matched.ask.notna()
@@ -213,7 +261,7 @@ def _(matched, mo, pd):
     ], columns=["", "value"])
     mo.vstack([
         mo.md("""
-        ## 2 · What could be matched
+        ## 3 · What could be matched
 
         Kalshi strikes outside the range Deribit traded in that 15-minute window are left out, so the far strikes
         are thinner here than in `03`. The expiry adjustment raises Deribit's vol by a few percent of itself (a
@@ -258,7 +306,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, matched, mo, pd):
     _far_dn = _by_m[_by_m.moneyness_bucket == "5–15% below"].iloc[0]
     mo.vstack([
         mo.md(f"""
-        ## 3 · Comparing vols
+        ## 4 · Comparing vols
 
         For every matched Kalshi strike: Kalshi's vol minus Deribit's vol at the same moneyness. Positive means
         Kalshi prices more movement.
@@ -281,43 +329,110 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, matched, mo, pd):
 
 
 @app.cell
-def _(H, MUTED, W, alt, matched, mo, pd):
-    _x = matched.dropna(subset=["price_gap_c"])
+def _(H, MUTED, SLOT1, SLOT2, W, alt, matched, mo, pd):
+    _x = matched.dropna(subset=["deribit_digital_adj", "deribit_digital_raw", "bid", "ask"]).copy()
+    _x["gap_adj"] = 100 * (_x.mid - _x.deribit_digital_adj)
+    _x["gap_raw"] = 100 * (_x.mid - _x.deribit_digital_raw)
     _by_m = (_x.groupby("moneyness_bucket", observed=True)
              .agg(strikes=("mid", "size"), kalshi_mid_c=("mid", lambda s: 100 * s.median()),
-                  deribit_c=("deribit_digital_adj", lambda s: 100 * s.median()),
-                  gap_c=("price_gap_c", "median"), mean_gap_c=("price_gap_c", "mean"),
+                  gap_not_stretched_c=("gap_raw", "median"), gap_stretched_c=("gap_adj", "median"),
                   kalshi_spread_c=("ask", lambda s: 100 * (s - _x.loc[s.index, "bid"]).median()))
              .round(1).reset_index())
+    _long = _by_m.melt(id_vars=["moneyness_bucket"], value_vars=["gap_not_stretched_c", "gap_stretched_c"],
+                       var_name="version", value_name="gap")
+    _long["version"] = _long.version.map({"gap_not_stretched_c": "Deribit at its own expiry (08:00 UTC)",
+                                         "gap_stretched_c": "Deribit stretched to Kalshi's expiry"})
+    _long["moneyness_bucket"] = _long.moneyness_bucket.astype(str)
     _order = list(_by_m.moneyness_bucket.astype(str))
     price_gap_chart = (
-        alt.Chart(_by_m.assign(moneyness_bucket=_by_m.moneyness_bucket.astype(str))).mark_bar(width=28)
+        alt.Chart(_long).mark_bar()
         .encode(x=alt.X("moneyness_bucket:N", sort=_order, title="Kalshi strike relative to spot"),
-                y=alt.Y("gap_c:Q", title="Kalshi mid − Deribit spread (cents, median)"),
-                tooltip=["moneyness_bucket:N", alt.Tooltip("gap_c:Q", format="+.1f"), "strikes:Q"])
-        .properties(title="Price gap across strikes (Deribit stretched to Kalshi's expiry)", width=W, height=H)
+                xOffset=alt.XOffset("version:N"),
+                y=alt.Y("gap:Q", title="Kalshi mid − Deribit (cents, median)"),
+                color=alt.Color("version:N", title=None, scale=alt.Scale(
+                    domain=["Deribit at its own expiry (08:00 UTC)", "Deribit stretched to Kalshi's expiry"],
+                    range=[SLOT2, SLOT1])),
+                tooltip=["moneyness_bucket:N", "version:N", alt.Tooltip("gap:Q", format="+.1f")])
+        .properties(title="Price gap across strikes, with and without the 13-hour stretch", width=W, height=H)
         + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED).encode(y="y:Q")
     )
-    _abs = _x.price_gap_c.abs()
     _half = 50 * (_x.ask - _x.bid)
+    _summary = pd.DataFrame([
+        (v, f"{_x[c].median():+.1f}¢", f"{_x[c].abs().median():.1f}¢", f"{(_x[c].abs() <= _half).mean():.0%}")
+        for v, c in [("Deribit at its own expiry (not stretched)", "gap_raw"),
+                     ("Deribit stretched to Kalshi's expiry", "gap_adj")]
+    ], columns=["Deribit price used", "median gap", "typical size of gap", "within half of Kalshi's spread"])
     mo.vstack([
         mo.md(f"""
-        ## 4 · Comparing prices
+        ## 5 · Comparing prices
 
         For every matched Kalshi strike K: Kalshi's mid price against the cost of Deribit's K − 250 / K + 250 call
-        spread per $1, priced on Deribit's smile at Kalshi's horizon. Both are "the price of $1 if BTC ends above
-        K", in cents.
+        spread per $1, priced on Deribit's smile. Both are "the price of $1 if BTC ends above K", in cents. Two
+        versions of Deribit's price:
 
-        - The gaps are **small**: the typical difference is **{_abs.median():.1f}¢**, about the size of Kalshi's
-          typical bid-ask spread ({2 * _half.median():.0f}¢). Deribit's price is within half a spread of Kalshi's mid
-          for {(_abs <= _half).mean():.0%} of quotes.
-        - Kalshi is a little **cheaper** than Deribit for strikes at and just below spot, and a little **dearer**
-          above spot. Kalshi puts slightly more probability on BTC ending a bit lower, and slightly more on large
-          rises, than Deribit does.
+        - **at its own expiry** (orange): Deribit's answer for BTC at **08:00 UTC** Friday, no stretch;
+        - **stretched** (blue): Deribit's vols stretched to Kalshi's **5pm ET** expiry (section 2).
         """),
+        mo.ui.table(_summary, selection=None, show_download=False, pagination=False),
         price_gap_chart,
+        mo.md(f"""
+        - **Without the stretch, the gap has a clear pattern**: Kalshi is higher for strikes above spot and lower for
+          strikes below it. That is exactly what 13 extra hours produce: more time gives BTC more chance to climb
+          above a high strike, and more chance to fall below a low one. Kalshi is answering a question with more
+          time in it.
+        - **With the stretch, most of that pattern goes away.** The typical gap is
+          **{_x.gap_adj.abs().median():.1f}¢**, about the size of Kalshi's typical bid-ask spread
+          ({2 * _half.median():.0f}¢).
+        - What remains: Kalshi is a little **cheaper** for strikes at and just below spot and a little **dearer**
+          above. Kalshi puts slightly more probability on BTC ending a bit lower, and on large rises, than Deribit.
+        """),
         mo.ui.table(_by_m.rename(columns={"moneyness_bucket": "strike vs spot"}), selection=None, show_download=False,
                     pagination=False),
+    ])
+    return
+
+
+@app.cell
+def _(matched, mo, pd):
+    _x = matched.dropna(subset=["deribit_digital_direct", "deribit_digital_raw", "deribit_digital_adj", "bid", "ask"])
+    _versions = [("Direct: Deribit's own dollar prices, real strikes, no model", "deribit_digital_direct"),
+                 ("Black-Scholes, Deribit's expiry (not stretched)", "deribit_digital_raw"),
+                 ("Black-Scholes, stretched to Kalshi's expiry", "deribit_digital_adj")]
+    _rows = []
+    for _name, _c in _versions:
+        _g = 100 * (_x.mid - _x[_c])
+        _rows.append((_name, f"{_g.median():+.1f}¢", f"{_g.abs().median():.1f}¢",
+                      f"{((_x[_c] < _x.bid) | (_x[_c] > _x.ask)).mean():.0%}"))
+    three_way = pd.DataFrame(_rows, columns=["Deribit price used", "Kalshi − Deribit (median)", "typical size of gap",
+                                              "Deribit outside Kalshi's bid-ask"])
+    _by_m = (_x.groupby("moneyness_bucket", observed=True)
+             .apply(lambda g: pd.Series({"cases": len(g),
+                                         "direct": 100 * (g.mid - g.deribit_digital_direct).median(),
+                                         "Black-Scholes, not stretched": 100 * (g.mid - g.deribit_digital_raw).median(),
+                                         "Black-Scholes, stretched": 100 * (g.mid - g.deribit_digital_adj).median()}))
+             .round(1).reset_index().rename(columns={"moneyness_bucket": "strike vs spot"}))
+    _bs_vs_direct = 100 * (_x.deribit_digital_direct - _x.deribit_digital_raw).abs().median()
+    mo.vstack([
+        mo.md(f"""
+        ### Without any model: Deribit's own prices
+
+        Does Black-Scholes drive these results? To check, take Deribit's prices exactly as they are: for a Kalshi
+        strike K, the dollar mark prices of Deribit's **K − 500** and **K + 500** calls (real strikes, the trade nearest
+        in time to the Kalshi snapshot), and divide their difference by $1,000. No vols, no interpolation, no stretch.
+        This only works where Deribit has calls at both strikes within the 15 minutes: **{len(_x):,} cases** in
+        {_x.ts.nunique():,} snapshots. All three versions below are on those same cases.
+        """),
+        mo.ui.table(three_way, selection=None, show_download=False, pagination=False),
+        mo.md(f"""
+        - **The direct prices and the unstretched Black-Scholes prices tell the same story** (they differ by a typical
+          {_bs_vs_direct:.1f}¢, mostly because the direct marks are from a few minutes before or after the snapshot,
+          while BTC moves). So Black-Scholes is not creating the result; it only lets us line things up.
+        - **The direct comparison cannot be stretched**: it is Deribit's answer for 08:00 UTC, and no Deribit price
+          exists for 5pm ET. Its gap carries the 13-hour pattern (Kalshi higher above spot, lower below).
+        - **Stretching is what closes most of the gap.** That is why the main results use it, and why it is the
+          assumption that most deserves a check (for example with Deribit's Saturday expiry).
+        """),
+        mo.ui.table(_by_m, selection=None, show_download=False, pagination=False),
     ])
     return
 
@@ -376,17 +491,18 @@ def _(compare, matched, mo, np, pd):
     _outside = ((_y.deribit_digital_adj < _y.bid) | (_y.deribit_digital_adj > _y.ask)).mean()
     _raw = _y.dropna(subset=["deribit_digital_raw"])
     _outside_raw = ((_raw.deribit_digital_raw < _raw.bid) | (_raw.deribit_digital_raw > _raw.ask)).mean()
-    edges = pd.DataFrame([(c, (_y.edge_c > c).mean(), _y.edge_c[_y.edge_c > c].median()) for c in (0, 2, 5, 10)],
-                         columns=["assumed Deribit cost (¢ per $1)", "share of Kalshi quotes still profitable",
-                                  "median edge left (¢)"])
-    edges["share of Kalshi quotes still profitable"] = edges["share of Kalshi quotes still profitable"].map("{:.1%}".format)
-    edges["median edge left (¢)"] = (edges["median edge left (¢)"] - edges["assumed Deribit cost (¢ per $1)"]).round(1)
+    _edge_raw = 100 * np.maximum(_raw.bid - compare.kalshi_fee(_raw.bid) - _raw.deribit_digital_raw,
+                                 _raw.deribit_digital_raw - _raw.ask - compare.kalshi_fee(_raw.ask))
+    edges = pd.DataFrame([(c, f"{(_y.edge_c > c).mean():.1%}", round(_y.edge_c[_y.edge_c > c].median() - c, 1),
+                           f"{(_edge_raw > c).mean():.1%}") for c in (0, 2, 5, 10)],
+                         columns=["assumed Deribit cost (¢ per $1)", "share still profitable (stretched)",
+                                  "median edge left (¢, stretched)", "share still profitable (not stretched)"])
     _by_t = (_y.groupby("tte_bucket", observed=True).edge_c.apply(lambda e: (e > 5).mean())
              .map("{:.1%}".format).rename("share profitable at 5¢ Deribit cost").reset_index()
              .rename(columns={"tte_bucket": "Kalshi time to expiry"}))
     mo.vstack([
         mo.md(f"""
-        ## 5 · Is there money on the table?
+        ## 6 · Is there money on the table?
 
         A gap only matters if you could trade on it. If Deribit's price is **below Kalshi's bid**, you could sell
         on Kalshi and buy the call spread on Deribit; if it is **above Kalshi's ask**, the reverse. Each trade pays
@@ -400,7 +516,9 @@ def _(compare, matched, mo, np, pd):
         - **Deribit's costs are what decide it, and we do not observe them directly** (we have trades and marks, not
           quotes). Replicating a $1 contract needs two Deribit options for 1/500 of a bitcoin each, and every leg pays
           a fee and half the bid-ask spread. For example, $15 of costs per leg per bitcoin is 2 × 15 / 500 = 6¢ per $1
-          contract. The table shows what survives under different assumptions.
+          contract. The table shows what survives under different assumptions, with Deribit stretched to Kalshi's
+          expiry and, for comparison, not stretched. Without the stretch many more quotes look profitable, but those
+          "edges" are mostly the 13 extra hours, not mispricing.
         """),
         mo.ui.table(edges, selection=None, show_download=False, pagination=False),
         mo.md("""
@@ -416,23 +534,27 @@ def _(compare, matched, mo, np, pd):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## 6 · What this says so far
+    ## 7 · Main takeaways
 
-    **Q2b, are Kalshi's prices consistent with option prices?** Broadly yes. Once the two are put in the same
-    units and the 13-hour expiry difference is accounted for:
+    **Q2b, are Kalshi's prices consistent with option prices? Broadly yes.**
 
-    - prices typically differ by a cent or two, about the size of Kalshi's own bid-ask spread;
-    - ATM vols differ by about a point, with Kalshi higher on roughly two days in three;
-    - the clearest difference is the **shape**: Deribit charges more for crash protection (steeper downside skew);
-    - the gaps that remain are mostly smaller than plausible trading costs, so they are not free money.
+    1. **The two markets agree closely.** Put in the same units, Kalshi's prices and Deribit's call-spread prices
+       typically differ by about 1.5¢, the size of Kalshi's own bid-ask spread. Their vols move together day to day.
+    2. **The expiry mismatch matters and has to be handled.** Kalshi settles 13 hours after Deribit, during
+       Friday's busy US session. Ignoring this makes Kalshi look about 3 vol points too high at the money; handling
+       it leaves about **1 point**, with Kalshi higher on roughly two days in three.
+    3. **The main real difference is the shape.** Far below the current price, Deribit's vol is about 3 points
+       above Kalshi's: Deribit traders pay more for crash protection than Kalshi traders do.
+    4. **There is little free money.** Gaps beyond Kalshi's bid-ask are mostly smaller than the cost of trading
+       both venues. What survives plausible costs is concentrated in the last days, where the hedge expires 13
+       hours early, which is risk rather than arbitrage.
+    5. **Why gaps can persist at all:** different users (US retail on Kalshi; professional and offshore on Deribit,
+       which does not serve US residents), so little capital moves between them; Kalshi's full collateral and fees;
+       Kalshi's 1¢ tick and $500 strikes.
 
-    **Possible explanations for what remains** (for the write-up): different users (US retail on Kalshi,
-    professional and offshore on Deribit; Deribit does not serve US residents), so little capital can move between
-    them; Kalshi's full collateral and fees; the 1¢ tick and $500 strikes on Kalshi; BRTI vs Deribit's index.
-
-    **Caveats.** The expiry adjustment assumes both markets expect each hour to be as volatile as it has been
-    historically. Deribit marks are Deribit's model values, not executable prices. The 15-minute matching window
-    and the fee formula are assumptions worth varying.
+    **Caveats.** The 13-hour adjustment uses BTC's past hour-by-hour movement, not what the market expected that
+    Friday. Deribit marks are Deribit's model values, not executable prices, and Deribit's trading costs are
+    assumed. The 15-minute matching window and Kalshi's fee formula are assumptions worth varying.
 
     **Next.** Check robustness (window length, the `exact_0800UTC` window, trade prices instead of marks); get
     Deribit order-book quotes if possible, to measure its real costs; extend to probabilities for Q3 (Kalshi vs

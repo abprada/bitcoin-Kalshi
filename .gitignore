@@ -30,3 +30,6 @@ data/clean/
 
 # Derived outputs (regenerate with 03_iv_surface.py)
 data/derived/
+
+# Course handout photo (contains instructor contact details)
+Project Description.HEIC

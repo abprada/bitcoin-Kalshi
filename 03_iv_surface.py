@@ -354,11 +354,12 @@ def _(CLEAN, H, SLOT1, SLOT2, W, alt, iv, iv_snapshots, iv_strikes, mo, np, pd):
                                                       alt.Tooltip("q75:Q", format=".1%"), "n:Q"])
     ).properties(title="ATM implied vol by time to expiry (median, interquartile band)", width=W, height=H)
 
-    # sanity: Kalshi ATM vol vs BTC realized vol, per day (realized from 15-minute exchange returns)
+    # Same-day sample standard deviation of 15-minute log returns, annualized
+    # using 96 intervals/day and 365 calendar days/year (not a rolling window).
     _px = pd.read_parquet(CLEAN / "btc_spot_1m.parquet", columns=["ts", "spot"]).set_index("ts").spot
     _r = np.log(_px[_px.index.minute % 15 == 0]).diff().dropna()
-    _d = (_r ** 2).resample("D").agg(["sum", "count"])
-    _rv = np.sqrt(_d.loc[_d["count"] >= 90, "sum"] * 365)
+    _d = _r.resample("D").agg(["std", "count"])
+    _rv = _d.loc[_d["count"] >= 90, "std"] * np.sqrt(96 * 365)
     _atm = iv_snapshots[iv_snapshots.clean].set_index("ts").atm_iv.resample("D").median()
     _both = pd.DataFrame({"Kalshi ATM implied vol": _atm, "BTC realized vol (same day)": _rv}).dropna()
     _long = _both.rename_axis("day").reset_index().melt(id_vars="day", var_name="series", value_name="vol")
@@ -390,6 +391,8 @@ def _(CLEAN, H, SLOT1, SLOT2, W, alt, iv, iv_snapshots, iv_strikes, mo, np, pd):
         mo.md(f"""
         **Sanity check.** Across {len(_both)} days, Kalshi's ATM implied vol averages {_both.iloc[:, 0].mean():.0%}
         against {_both.iloc[:, 1].mean():.0%} realized, with a daily correlation of {_corr:.2f}.
+        Realized volatility is the sample standard deviation of that UTC day's 15-minute BTC log returns,
+        multiplied by √(96 × 365). Days require at least 90 returns; there is no rolling window.
         """),
     ])
     return rv_chart, surface_chart, term_chart

@@ -109,40 +109,35 @@ def _(mo):
 
 
 @app.cell
-def _(mo, pd, write_button):
+def _(iv, mo, pd, write_button):
     WRITE = write_button.value or not mo.running_in_notebook()
     ROOT = mo.notebook_dir()
     CLEAN, DERIVED = ROOT / "data" / "clean", ROOT / "data" / "derived"
 
     SNAPSHOT_EVERY_MIN = 15
-    MAX_QUOTE_AGE_MIN = 15
-    PRICE_BAND = (0.02, 0.98)
-    MIN_HOURS_TO_EXPIRY = 1.0
-    MIN_STRIKES = 5
 
-    # read weekly by weekly and keep only snapshot minutes, so memory stays small
+    # read weekly by weekly and keep only snapshot minutes, so memory stays small. Which quotes make the ladder
+    # (age, price band, time to expiry) is iv.ladder_quotes, shared with lib/pairs.py
     _cols = ["event_ticker", "market_ticker", "strike", "ts", "tau_years", "bid", "ask", "mid", "spread", "quote_age_min",
              "spot", "exchange_open", "usable"]
     _frames, _outer = [], []
     for _f in sorted((CLEAN / "kalshi_weekly_quotes").glob("*.parquet")):
         _d = pd.read_parquet(_f, columns=_cols)
-        _d = _d[_d.exchange_open & (_d.ts.dt.minute % SNAPSHOT_EVERY_MIN == 0) & (_d.quote_age_min <= MAX_QUOTE_AGE_MIN)
-                & (_d.tau_years * 8760 >= MIN_HOURS_TO_EXPIRY)]
-        _ladder = _d.usable & _d.mid.between(*PRICE_BAND)
-        _frames.append(_d[_ladder].drop(columns=["bid", "ask", "exchange_open", "usable"]))
+        _ladder, _rest = iv.ladder_quotes(_d[_d.ts.dt.minute % SNAPSHOT_EVERY_MIN == 0])
+        _frames.append(_ladder.drop(columns=["bid", "ask", "exchange_open", "usable"]))
         # every other quoted strike (one-sided, too wide, or outside the price band) bounds the tails (method step 3)
-        _outer.append(_d.loc[~_ladder & (_d.bid.notna() | _d.ask.notna()), ["event_ticker", "ts", "strike", "bid", "ask"]])
+        _outer.append(_rest[["event_ticker", "ts", "strike", "bid", "ask"]])
     quotes = pd.concat(_frames, ignore_index=True)
     outer_quotes = pd.concat(_outer, ignore_index=True)
 
     _s = quotes.groupby(["event_ticker", "ts"]).agg(n=("strike", "size"), spot=("spot", "first"),
                                                    lo=("strike", "min"), hi=("strike", "max"))
     _spans = (_s.lo < _s.spot) & (_s.hi > _s.spot)
-    snapshots = _s[(_s.n >= MIN_STRIKES) & _spans].reset_index()
+    snapshots = _s[iv.ladder_ok(_s.n, _s.lo, _s.hi, _s.spot)].reset_index()
     mo.md(f"""
     **Inputs.** {len(quotes):,} filtered quotes in {len(_s):,} candidate snapshots. Kept **{len(snapshots):,}**
-    snapshots ({len(snapshots) / len(_s):.0%}); dropped {int((_s.n < MIN_STRIKES).sum()):,} with fewer than
-    {MIN_STRIKES} usable strikes and {int(((_s.n >= MIN_STRIKES) & ~_spans).sum()):,} whose strikes do not span spot.
+    snapshots ({len(snapshots) / len(_s):.0%}); dropped {int((_s.n < iv.MIN_STRIKES).sum()):,} with fewer than
+    {iv.MIN_STRIKES} usable strikes and {int(((_s.n >= iv.MIN_STRIKES) & ~_spans).sum()):,} whose strikes do not span spot.
     Median usable strikes per kept snapshot: {snapshots.n.median():.0f}.
     """)
     return CLEAN, DERIVED, ROOT, WRITE, outer_quotes, quotes, snapshots

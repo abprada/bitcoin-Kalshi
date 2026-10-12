@@ -78,6 +78,23 @@ def horizon_vol_ratio(start: pd.Timestamp, long_end: pd.Timestamp, short_end: pd
     return float(np.sqrt(per_hour(long_end) / per_hour(short_end)))
 
 
+def _cumulative_variance(ts, profile: pd.Series) -> np.ndarray:
+    """Variance accumulated from Monday 1970-01-05 00:00 UTC to each time in `ts`, partial hours pro rata."""
+    h = (pd.DatetimeIndex(ts) - pd.Timestamp("1970-01-05", tz="UTC")) / pd.Timedelta(hours=1)
+    h = np.asarray(h, dtype=float)
+    full = np.floor(h).astype(int)
+    p = profile.to_numpy(dtype=float)
+    cum = np.r_[0.0, np.cumsum(p)]
+    return (full // 168) * cum[-1] + cum[full % 168] + p[full % 168] * (h - full)
+
+
+def horizon_vol_ratios(start, long_end, short_end, profile: pd.Series) -> np.ndarray:
+    """`horizon_vol_ratio` for arrays of times at once (same result, vectorized)."""
+    t0, t_long, t_short = (_cumulative_variance(x, profile) for x in (start, long_end, short_end))
+    hours = lambda a, b: np.asarray((pd.DatetimeIndex(b) - pd.DatetimeIndex(a)) / pd.Timedelta(hours=1), dtype=float)
+    return np.sqrt(((t_long - t0) / hours(start, long_end)) / ((t_short - t0) / hours(start, short_end)))
+
+
 def atm_vol(d: pd.DataFrame, by: list[str], col: str = "iv_deribit", band: float = ATM_BAND,
             min_trades: int = 5) -> pd.DataFrame:
     """Median vol of trades within `band` of the money, per group; groups with fewer than `min_trades` dropped.

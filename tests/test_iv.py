@@ -269,3 +269,23 @@ def test_pooled_surface_masks_cells_with_too_few_observations():
                                                  "atm_iv": [0.4], "iv_surface": [0.5]})], ignore_index=True)
     grid = iv.pooled_surface(df, h_edges=[24, 48], m_edges=[-1, 0, 0.5, 1], min_obs=2, min_snaps=2)
     np.testing.assert_allclose(grid.to_numpy(), [[0.72, 0.60, np.nan]])
+
+
+# --- which quotes make a ladder ---------------------------------------------------------------------
+
+def test_ladder_quotes_keeps_fresh_usable_mids_in_the_price_band():
+    import pandas as pd
+    q = pd.DataFrame({"strike": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                      "mid": [0.50, 0.50, 0.99, 0.50, 0.50, np.nan],
+                      "usable": [True, True, True, False, True, False],
+                      "bid": [0.49, 0.49, 0.98, 0.30, 0.49, np.nan], "ask": [0.51] * 5 + [np.nan],
+                      "quote_age_min": [0, 20, 0, 0, 0, 0], "exchange_open": [True] * 6,
+                      "tau_years": [1 / 365] * 4 + [0.5 / 8760, 1 / 365]})
+    ladder, outer = iv.ladder_quotes(q)
+    # 2: too old; 5: under an hour to expiry. 3 (99c) and 4 (not usable) bound the tails; 6 has no quote at all
+    assert ladder.strike.tolist() == [1.0]
+    assert outer.strike.tolist() == [3.0, 4.0]
+
+
+def test_ladder_ok_needs_enough_strikes_on_both_sides_of_spot():
+    assert iv.ladder_ok([5, 4, 5], [90.0, 90.0, 101.0], [110.0, 110.0, 110.0], 100.0).tolist() == [True, False, False]

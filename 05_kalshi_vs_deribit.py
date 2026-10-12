@@ -40,7 +40,7 @@ def _(mo):
     what "at the money" means, the buckets, the medians and the 95% intervals, and the 13-hour factor.
 
     The code is in `lib/pairs.py` and `lib/deribit.py`, tested in `tests/`.
-    Needs `02_clean_data.py` and `03_iv_surface.py` to have run. Writes nothing. Takes about two minutes.
+    Needs `02_clean_data.py` and `03_iv_surface.py` to have run. Opening it writes nothing; running it as a script (`python 05_kalshi_vs_deribit.py`) saves its figures to `outputs/figures/` (prefixed `05_`) and the 3D surfaces to `outputs/05_iv_surfaces_3d.html`. Takes about two minutes.
     """)
     return
 
@@ -193,11 +193,11 @@ def _(H, SLOT1, SLOT2, W, alt, deribit, hour_profile, mo, np, paired, pd):
                                  "Kalshi only: the 13 extra hours")
     timeline_chart = (
         alt.Chart(_blocks).mark_bar(width=4)
-        .encode(x=alt.X("hour:T", title=None, axis=alt.Axis(format="%a %H:%M", labelAngle=0, tickCount=8)),
+        .encode(x=alt.X("hour:T", title="time (UTC)", scale=alt.Scale(type="utc"), axis=alt.Axis(format="%a %H:%M", labelAngle=0, tickCount=8)),
                 y=alt.Y("busy:Q", title="how much BTC usually moves (× average hour)"),
                 color=alt.Color("period:N", title=None, scale=alt.Scale(
                     domain=["both markets (to Deribit's expiry)", "Kalshi only: the 13 extra hours"], range=[SLOT1, SLOT2])),
-                tooltip=[alt.Tooltip("hour:T", format="%a %H:%M UTC"), alt.Tooltip("busy:Q", format=".2f"), "period:N"])
+                tooltip=[alt.Tooltip("utcdayhoursminutes(hour):T", title="hour (UTC)"), alt.Tooltip("busy:Q", format=".2f"), "period:N"])
         .properties(title="Every hour from Monday 21:45 UTC to Kalshi's expiry, by how much BTC usually moves then",
                     width=W, height=H)
     )
@@ -267,7 +267,7 @@ def _(H, SLOT1, SLOT2, W, alt, deribit, hour_profile, mo, np, paired, pd):
         Deribit's Friday 08:00 and Saturday 08:00 expiries, which bracket Kalshi's.
         """),
     ])
-    return
+    return (timeline_chart,)
 
 
 @app.cell(hide_code=True)
@@ -374,7 +374,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
         mo.md("**The full grid** (gap after the adjustment, median per cell; empty with fewer than 50 pairs):"),
         mo.ui.table(grid, selection=None, show_download=False, pagination=False),
     ])
-    return
+    return gap_chart, shape_chart
 
 
 @app.cell(hide_code=True)
@@ -401,7 +401,7 @@ def _(H, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
         """),
         daily_chart,
     ])
-    return
+    return (daily_chart,)
 
 
 @app.cell(hide_code=True)
@@ -489,7 +489,7 @@ def _(W, alt, go, mo, pairs, paired, pd):
         mo.md("**Both surfaces in 3D** (drag to rotate, hover for values). Gaps in a surface are cells with too few pairs."),
         surface_3d,
     ])
-    return (surf,)
+    return gap_surface_chart, levels_chart, surf, surface_3d
 
 
 @app.cell(hide_code=True)
@@ -567,7 +567,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, hour_profile, mo, pairs, paired, pd):
         """),
         mo.ui.table(sensitivity, selection=None, show_download=False, pagination=False),
     ])
-    return
+    return (far_gap_chart,)
 
 
 @app.cell(hide_code=True)
@@ -728,6 +728,22 @@ def _(mo, np, pairs, paired, pd):
       (the hours that contain the extra 13) by 1.5, and also with no factor at all (equivalent to every hour being
       alike).
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(ROOT, daily_chart, far_gap_chart, gap_chart, gap_surface_chart, levels_chart, mo, shape_chart, surface_3d,
+      timeline_chart):
+    # Save the figures when run as a script (python 05_kalshi_vs_deribit.py); opening the notebook writes nothing
+    if not mo.running_in_notebook():
+        _out = ROOT / "outputs" / "figures"
+        _out.mkdir(parents=True, exist_ok=True)
+        for _name, _chart in [("13h_hour_profile", timeline_chart), ("vol_gap_across_smile", gap_chart),
+                              ("smile_shape", shape_chart), ("daily_atm_vol", daily_chart),
+                              ("iv_surfaces", levels_chart), ("gap_surface", gap_surface_chart),
+                              ("far_from_expiry_gap", far_gap_chart)]:
+            _chart.save(_out / f"05_{_name}.png", scale_factor=2)
+        surface_3d.write_html(ROOT / "outputs" / "05_iv_surfaces_3d.html", include_plotlyjs="cdn")
     return
 
 

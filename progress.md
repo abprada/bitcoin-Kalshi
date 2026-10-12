@@ -1,6 +1,6 @@
 # Progress
 
-*As of 2026-10-06*
+*As of 2026-10-11*
 
 ## The idea in one paragraph
 
@@ -35,12 +35,12 @@ Run the numbered scripts in order. Each one reads the previous one's output.
 | 2 | `02_clean_data.py` | Applies the cleaning rules below and saves a clean dataset (about 25 seconds) | `data/clean/` |
 | 3 | `03_iv_surface.py` | Turns the clean prices into implied volatilities and draws the surface (about 2 minutes) | `data/derived/`, `outputs/` |
 | 4 | `04_deribit_exploration.py` | Notebook that explains and checks the Deribit data, with a first daily comparison | charts only |
-| 5 | `05_kalshi_vs_deribit.py` | Compares Kalshi with Deribit, in prices and in volatilities (about 15 seconds) | charts only |
+| 5 | `05_kalshi_vs_deribit.py` | Compares Kalshi's and Deribit's implied volatilities, trade by trade (about 2 minutes) | charts only |
 | 6 | `06_results_summary.py` | **Short summary of the results for the supervisors**: question, answer, method, four figures | charts only |
 
 Other folders:
-- `lib/`: the shared code (downloading, cleaning rules, volatility maths, Deribit loading, the Kalshi–Deribit comparison).
-- `tests/`: 127 automatic checks that the code does what it should. Run with `pytest`.
+- `lib/`: the shared code (downloading, cleaning rules, volatility maths, Deribit loading, the Kalshi–Deribit comparison in `pairs.py`; `compare.py` holds the earlier snapshot method and the call-spread prices, no longer shown in the notebooks).
+- `tests/`: automatic checks that the code does what it should. Run with `pytest`.
 - `outputs/`: the figures (saved in git).
 - `docs/iv_surface_method.md`: a one-page note on the method for the team.
 - `data/`: the data. `raw/`, `clean/` and `derived/` are not in git, because they can be rebuilt with the scripts. The other files in `data/` are a collaborator's (Deribit and IBIT options, Kalshi hourly data) and are kept as they are.
@@ -135,24 +135,26 @@ The collaborator's file has **205,896 Deribit option trades** from January 15 to
 
 ## Kalshi vs Deribit (`05`)
 
-**How.** The two markets sell different things, so we put them in the same units two ways:
-1. **Prices:** a Deribit call spread from K − $250 to K + $250, divided by $500, pays like Kalshi's "above K" contract. Its cost is Deribit's price for Kalshi's contract, in cents.
-2. **Volatilities:** both markets turned into implied volatility.
+**The timing problem.** Kalshi has every strike's bid and ask every minute. Our Deribit data are only trades, between 19:30 and 22:29 UTC, at whatever strikes people happen to trade. A comparison is only fair if both prices are from the same moment.
 
-Each Kalshi snapshot (every 15 minutes, 19:30–22:29 UTC) is paired with Deribit's mark prices from within 15 minutes, in the Friday expiry with the same date: **2,118 snapshots on 249 days**. Deribit's volatilities are interpolated to Kalshi's strikes (never beyond the strikes Deribit traded).
+**Volatilities: trade by trade (`lib/pairs.py`).** Each Deribit trade is the anchor, and Kalshi is read at that moment:
+1. **Deribit's volatility** from the trade's mark price (Deribit's fair value at that instant; the traded price lands on the bid or the ask), using Deribit's Bitcoin index and the time left to Deribit's expiry. Pieces of one order (same strike, same minute) count once.
+2. **Kalshi's volatility** at the same strike, from Kalshi's ladder at the nearest minute (**at most 30 seconds** from the trade), built exactly as in `03`. The strike is on Kalshi's ladder 3 times in 4; otherwise it is read between the two neighbouring Kalshi strikes. Nothing is interpolated on the Deribit side.
+3. **The 13-hour gap** (below), then **gap = Kalshi − Deribit**, pooled by distance from today's price in standard deviations and by time to expiry. The 95% intervals resample whole days, because pairs on the same day are not independent.
 
-Which Kalshi snapshots are used: those with a volatility at today's price and enough strikes, as in `03`'s quality check, but **without** the "expected Friday price within 0.25% of the exchange price" rule. That rule dropped 14% of snapshots, mostly 3–7 days before expiry; the large gaps neither follow nor predict Bitcoin's moves, and Kalshi's volatilities are computed against Kalshi's own expected price, so they are not distorted by it. Keeping them changes no result (with the rule: 1,861 snapshots, 1.13 points at today's price; without: 1.09). Bad individual quotes are still removed strike by strike (gap between bid and ask over 20¢, or a quote older than 15 minutes).
+This gives **15,142 pairs on 251 days** (37 weeklies), a median of 44 per afternoon. Deribit only trades a few strikes at a time, so the result is the **average smile over the year**, not a full Deribit smile at any one moment. Kalshi's ladder must pass `03`'s checks (fresh quotes, bid–ask gap at most 20¢, at least 5 strikes around today's price, a volatility at today's price, at least 2 strikes per standard deviation), but **not** the rule that its expected Friday price be within 0.25% of the exchange price: that rule dropped 14% of snapshots, mostly 3–7 days before expiry, with gaps that neither follow nor predict Bitcoin's moves, and Kalshi's volatilities are computed against Kalshi's own expected price anyway.
 
-**The 13-hour gap.** Deribit has no option ending when Kalshi's does, so we stretch Deribit's volatility over Kalshi's extra hours. Those hours are Friday's US session, which historically moves 1.6 times as much as an average hour of the week, so Deribit's volatility is raised by about 3% of itself (1.03×). Results are shown with and without this step, because it is an assumption.
+**Only volatilities.** The notebooks compare implied volatilities only. An earlier price comparison in cents (Deribit call spreads against Kalshi's contracts, typical gap 1.5¢, about Kalshi's bid–ask spread) has been dropped from them; its code stays in `lib/compare.py`.
+
+**The 13-hour gap.** Deribit has no option ending when Kalshi's does, so we stretch Deribit's volatility over Kalshi's extra hours. Those hours are Friday's US session, which historically moves 1.6 times as much as an average hour of the week, so Deribit's volatility is raised by 2–14% of itself (×1.02 a week out, up to ×1.14 a day out). Results are shown with and without this step, because it is an assumption.
 
 **Results.**
-- **Volatility at today's price:** Kalshi is 2.9 points above Deribit as traded, **1.1 points** after the 13-hour adjustment, higher on about two days in three. (The first daily comparison in `04` found about 4 points; about half of that was the 13 hours.)
-- **Shape:** far below today's price, Kalshi is about 3 points *lower* than Deribit. Deribit charges more for crash protection.
-- **Prices:** the typical difference is **1.5¢**, about Kalshi's own bid–ask spread (2¢). Kalshi is slightly cheaper at and just below today's price, slightly dearer above it.
-- **Money on the table?** Deribit's price is outside Kalshi's bid–ask 60% of the time. After Kalshi's fee an edge is left on 30% of quotes, typically 1.4¢. Copying a Kalshi contract on Deribit costs two option trades; with an assumed 5¢ of Deribit costs only 3% of quotes still show an edge, mostly in the last two days, where the Deribit leg expires 13 hours early (risky, not free money).
-- **Without the 13-hour adjustment** Kalshi looks about 3 vol points too high at today's price, and its prices look low below today's price and high above it: exactly what 13 extra hours of possible movement produce. The adjustment removes most of this.
-- **Check without any model:** Deribit's own dollar prices at real strikes K − 500 and K + 500 (2,107 cases) give the same picture as the Black-Scholes version before the adjustment, so Black-Scholes is not driving the result.
-- **Answer to 2b so far:** the two markets broadly agree once put in the same units and the 13-hour difference is handled; what is left is mostly smaller than trading costs. Possible reasons for the rest: different users (Deribit does not serve US residents), Kalshi's full collateral and fees, its 1¢ tick and $500 strikes.
+- **Volatility at today's price:** Kalshi is 3.8 points above Deribit as traded, **1.8 points** after the 13-hour adjustment (95% interval 1.3 to 2.2), higher in 74% of pairs and on 76% of days. Day by day the two move together (correlation 0.95).
+- **The adjustment does not remove everything:** after it, the gap at today's price still grows from +0.4 points a week out to +3.0 with 1–2 days left. Either Kalshi really prices the last days higher, or the 13 hours carry more movement than history gives them.
+- **Shape:** Deribit's smile is steeper. Two standard deviations below today's price Kalshi is 5.4 points *lower* than Deribit (Deribit charges more for crash protection); two above, 1.2 lower, not clearly different from zero.
+- **Compared with the earlier snapshot method** (1.1 points at today's price): the snapshot method drew straight lines between the few strikes Deribit traded in 30 minutes. Deribit's smile is curved, so those lines overstated Deribit's volatility at today's price and understated the gap. Timing itself made little difference.
+- **Far from expiry (4–7 days left, 5,789 pairs on 144 days),** the 13 hours are about 11% of the horizon and the adjustment only ×1.02–1.03. There Kalshi is **+1.8 points** above Deribit at today's price with no adjustment (95% interval 1.3 to 2.2) and **+0.7** with it (0.3 to 1.2): higher either way. Deribit's steeper downside holds even with no adjustment (−2.9 points two standard deviations below). Across three assumptions about how busy the extra hours are, the result a week out moves by 2.6 points, against 8.8 one to two days out, so this is the comparison that least depends on the adjustment.
+- **Answer to 2b so far:** in implied volatility the two markets broadly agree once compared at the same moment and the 13-hour difference is handled. Kalshi is a little richer at today's price and flatter in the wings. Possible reasons: different users (Deribit does not serve US residents), Kalshi's full collateral and fees, its 1¢ tick and $500 strikes.
 
 ## Known limits
 
@@ -167,6 +169,6 @@ Which Kalshi snapshots are used: those with a volatility at today's price and en
 
 1. Handle the 13-hour gap with market prices instead of history: interpolate between Deribit's Friday 08:00 and Saturday 08:00 UTC expiries, which bracket Kalshi's 5pm ET.
 2. Robustness of `05`: matching window length, trade prices instead of marks, the morning window.
-3. Get Deribit bid and ask quotes, to measure its trading costs properly.
+3. Get Deribit option-chain quotes (bid, ask and mark for every option, e.g. Tardis.dev): a full Deribit smile every minute for the comparison.
 4. Handout question 1: write up the theory (Kalshi contract logistics, Black-Scholes value N(d₂), the call-spread link).
 5. Handout question 3: check whether Kalshi's probabilities come true as often as they say (calibration against how contracts settled), and compare with Deribit's.

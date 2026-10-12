@@ -123,6 +123,16 @@ Every 15 minutes we take the current ladder of contract prices and do the follow
 - `figures/forward_basis.png`, `figures/clean_by_ttm.png`: quality checks
 - 3D surfaces you can rotate in a browser: `iv_surface_3d.html` (full week), `iv_surface_3d_1d7d.html` (1–7 days), `iv_surface_3d_1d.html` (last 24 hours)
 
+Kalshi vs Deribit (written by running `python 05_kalshi_vs_deribit.py` and `python 06_results_summary.py`):
+- `figures/05_13h_hour_profile.png`: how much Bitcoin usually moves each hour up to Kalshi's expiry, with the 13 extra hours
+- `figures/05_vol_gap_across_smile.png`, `figures/05_smile_shape.png`: the gap across the smile and the two average smile shapes
+- `figures/05_daily_atm_vol.png`: volatility at today's price, day by day, both markets
+- `figures/05_iv_surfaces.png`, `figures/05_gap_surface.png`: the two surfaces and their gap, by days to expiry and distance from today's price
+- `figures/05_far_from_expiry_gap.png`: the gap across the smile with 4–7 days left, with and without the 13-hour adjustment
+- `figures/06_fig1_daily_atm_vol.png` to `figures/06_fig4_gap_surface.png`: the four figures of the results summary
+- `05_iv_surfaces_3d.html`: both surfaces in 3D
+- `figures/smile_in_sd.png`, `figures/trades_A_one_afternoon.png` to `trades_D_per_day.png`: the average smile from the pairs, and when Deribit trades compared with Kalshi (one-off figures, not written by a notebook)
+
 ## Deribit (`04`)
 
 The collaborator's file has **205,896 Deribit option trades** from January 15 to September 30, 2026 (259 days).

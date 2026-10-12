@@ -80,7 +80,7 @@ def _(mo, np, pairs, pd):
         corr=daily[["kalshi_atm", "deribit_atm_adj"]].corr().iloc[0, 1],
         ratio_lo=paired.horizon_ratio.min(), ratio_hi=paired.horizon_ratio.max(),
     )
-    return daily, hour_profile, kalshi_weeks, paired, stats
+    return ROOT, daily, hour_profile, kalshi_weeks, paired, stats
 
 
 @app.cell(hide_code=True)
@@ -198,7 +198,7 @@ def _(H, SLOT1, SLOT2, W, alt, daily, mo, stats):
         """),
         fig1,
     ])
-    return
+    return (fig1,)
 
 
 @app.cell(hide_code=True)
@@ -228,7 +228,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd, stats):
         """),
         fig2,
     ])
-    return
+    return (fig2,)
 
 
 @app.cell(hide_code=True)
@@ -277,7 +277,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, hour_profile, mo, pairs, paired, pd, stats
         """),
         mo.ui.table(_sens, selection=None, show_download=False, pagination=False),
     ])
-    return
+    return (fig3,)
 
 
 @app.cell(hide_code=True)
@@ -310,7 +310,7 @@ def _(W, alt, mo, pairs, paired):
         """),
         fig4,
     ])
-    return
+    return (fig4,)
 
 
 @app.cell(hide_code=True)
@@ -345,6 +345,18 @@ def _(mo, stats):
     *Details: `03_iv_surface.py` (Kalshi implied vol), `04_deribit_exploration.py` (Deribit data),
     `05_kalshi_vs_deribit.py` (full comparison). Code in `lib/` (the pairs in `lib/pairs.py`), tested in `tests/`.*
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(ROOT, fig1, fig2, fig3, fig4, mo):
+    # Save the figures when run as a script (python 06_results_summary.py); opening the notebook writes nothing
+    if not mo.running_in_notebook():
+        _out = ROOT / "outputs" / "figures"
+        _out.mkdir(parents=True, exist_ok=True)
+        for _name, _chart in [("fig1_daily_atm_vol", fig1), ("fig2_vol_gap_across_smile", fig2),
+                              ("fig3_far_from_expiry", fig3), ("fig4_gap_surface", fig4)]:
+            _chart.save(_out / f"06_{_name}.png", scale_factor=2)
     return
 
 

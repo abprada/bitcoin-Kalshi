@@ -70,3 +70,11 @@ def test_direct_digital_is_the_call_spread_per_dollar():
     got = compare.direct_digital([60_500.0, 61_000.0], marks)
     assert got[0] == pytest.approx((1_300.0 - 770.0) / 1_000)      # 60,000 and 61,000 both have marks
     assert np.isnan(got[1])                                        # 61,500 has a mark but 60,500 does not
+
+
+def test_usable_snapshots_ignore_the_forward_basis():
+    s = pd.DataFrame({"atm_iv": [0.45, 0.45, np.nan, 0.45],
+                      "strikes_per_sd": [3.0, 3.0, 3.0, 1.5],
+                      "forward_basis_bps": [5.0, 80.0, 5.0, 5.0]})
+    # a large basis is kept; a missing ATM vol or too coarse a strike grid is not
+    assert compare.usable_kalshi_snapshots(s).tolist() == [True, True, False, False]

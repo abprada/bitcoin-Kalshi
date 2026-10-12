@@ -22,6 +22,18 @@ MONEYNESS_LABELS = ["5–15% below", "2–5% below", "0.5–2% below", "within 0
                     "5–15% above"]
 KALSHI_FEE_RATE = 0.07      # Kalshi taker fee per contract = rate x P x (1 - P), rounded up to the cent (check the
                             # current fee schedule before relying on it)
+MIN_STRIKES_PER_SD = 2      # Kalshi snapshot grid check, as in 03's "clean"
+
+
+def usable_kalshi_snapshots(snaps: pd.DataFrame) -> pd.Series:
+    """Kalshi snapshots used in the comparison: an ATM vol exists and the strike grid resolves the distribution.
+
+    03's "clean" flag also requires Kalshi's implied forward within +/-25 bps of exchange spot. That check is left
+    out here on purpose: the vols are inverted against Kalshi's own forward, so a basis does not distort them, large
+    bases neither lag nor lead BTC, and dropping them would remove exactly the cases where Kalshi disagrees with
+    spot. Bad individual quotes are still screened strike by strike in 02/03 (spread <= 20c, quote age <= 15 min).
+    """
+    return snaps.atm_iv.notna() & (snaps.strikes_per_sd >= MIN_STRIKES_PER_SD)
 
 
 def smile_from_trades(trades: pd.DataFrame, vol_col: str = "iv_mark") -> pd.DataFrame:
@@ -73,7 +85,7 @@ def kalshi_fee(price, rate: float = KALSHI_FEE_RATE) -> np.ndarray:
 
 
 def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strikes: int = MIN_DERIBIT_STRIKES) -> dict:
-    """Match every clean Kalshi snapshot in the US afternoon to Deribit and put both in the same units.
+    """Match every usable Kalshi snapshot in the US afternoon to Deribit and put both in the same units.
 
     For each Kalshi snapshot (19:30-22:29 UTC) and the Deribit Friday expiry with the same date: Deribit's smile from
     the marks of trades within `window_min` minutes, interpolated to Kalshi's strikes (vols), stretched to Kalshi's
@@ -92,11 +104,11 @@ def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strik
                     & trades.iv_mark.notna() & (trades.tau_years > 0)]
     by_expiry = {e: g for e, g in trades.groupby("expiry")}
 
-    # Kalshi: clean snapshots in the same window, before the Deribit option with the same date expires
+    # Kalshi: usable snapshots in the same window, before the Deribit option with the same date expires
     snaps = pd.read_parquet(derived / "iv_snapshots.parquet")
     snaps["expiry"] = snaps.ts + pd.to_timedelta(snaps.hours_to_expiry, unit="h")
     minute = snaps.ts.dt.hour * 60 + snaps.ts.dt.minute
-    snaps = snaps[snaps.clean & minute.between(*AFTERNOON_UTC)].copy()
+    snaps = snaps[usable_kalshi_snapshots(snaps) & minute.between(*AFTERNOON_UTC)].copy()
     snaps["deribit_expiry"] = (pd.to_datetime(snaps.expiry.dt.date.astype(str)).dt.tz_localize("UTC")
                                + pd.Timedelta(hours=8))
     snaps = snaps[snaps.ts < snaps.deribit_expiry]

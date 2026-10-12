@@ -25,6 +25,7 @@ SD_EDGES = np.round(np.arange(-3.25, 3.26, 0.5), 2)   # half-SD buckets; the mid
 SD_CENTRES = np.round((SD_EDGES[:-1] + SD_EDGES[1:]) / 2, 2)
 TTE_EDGES = [24, 48, 72, 120, 170]                    # Kalshi hours to expiry
 TTE_LABELS = ["1–2 days", "2–3 days", "3–5 days", "5–7 days"]
+FAR_FROM_EXPIRY_HOURS = 96   # 4+ days left: the 13 extra hours are about a tenth of the horizon, the stretch about x1.03
 KALSHI_COLS = ["event_ticker", "strike", "ts", "tau_years", "bid", "ask", "mid", "spread", "quote_age_min", "spot",
                "exchange_open", "usable"]
 
@@ -167,3 +168,15 @@ def gap_table(pairs: pd.DataFrame, by, col: str = "gap_adj", n_boot: int = 500, 
 def atm(pairs: pd.DataFrame) -> pd.DataFrame:
     """Pairs at the money: within a quarter of a standard deviation of Kalshi's forward."""
     return pairs[pairs.sd.abs() <= 0.25]
+
+
+def far_from_expiry(pairs: pd.DataFrame, hours: float = FAR_FROM_EXPIRY_HOURS) -> pd.DataFrame:
+    """Pairs with at least `hours` left on Kalshi's contract, where the expiry mismatch matters least."""
+    return pairs[pairs.kalshi_hours >= hours]
+
+
+def gap_with_profile(pairs: pd.DataFrame, profile: pd.Series) -> pd.Series:
+    """Kalshi - Deribit (vol points) with Deribit stretched by another hour-of-week variance profile, to test how
+    much the result depends on the historical one."""
+    ratio = deribit.horizon_vol_ratios(pairs.minute, pairs.kalshi_expiry, pairs.deribit_expiry, profile)
+    return 100 * (pairs.kalshi_iv - pairs.deribit_iv * ratio)

@@ -31,3 +31,9 @@
 
 ## Where
 `03_iv_surface.py` (method in `lib/iv.py`), with figures in `outputs/`. The rotatable 3D surface is `outputs/iv_surface_3d.html`.
+
+## Plot coordinates
+Smiles and surfaces use distance from current spot in ATM standard deviations:
+`(K / spot - 1) / (snapshot ATM IV * sqrt(tau_years))`. Zero is current spot; ±1 is one
+ATM-implied standard deviation over the remaining contract life. Surfaces pool in 0.25σ bins
+from −3σ to +3σ; IV levels remain annualized.

@@ -99,7 +99,7 @@ Every 15 minutes we take the current ladder of contract prices and do the follow
 
 **Why not solve each contract directly?** We tried this first ("method 1"). Near today's price a contract's price barely depends on volatility: 1¢ of noise changes the answer by about 17 points, and for 1 in 3 contracts there is no answer at all. Even averaged over thousands of snapshots it comes out 6–11 points too low. That is not noise: it is a systematic error from the smile's shape getting mixed in. Adding up the ladder first ("method 2", what we use) avoids both problems.
 
-**Making the surface.** To draw a smooth surface we:
+**Making the surface.** Smile and surface horizontal axes use `(K / current spot − 1) / (snapshot ATM IV × √tau_years)`: zero is current spot, and ±1 is one ATM-implied standard deviation over the remaining life. Surface bins run from −3σ to +3σ in steps of 0.25σ. To draw a smooth surface we:
 - use only contracts priced between 5¢ and 95¢ (at 2¢ one tick is half the price);
 - cap extreme volatilities at the 1st and 99th percentile;
 - average the *shape* of the smile over many snapshots, then scale it by the typical volatility at that time to Friday.
@@ -112,11 +112,11 @@ Every 15 minutes we take the current ladder of contract prices and do the follow
 - **Compared with Bitcoin's actual moves:**
   - day by day, Kalshi's volatility averages 45.5% against 41.0% realized, with a correlation of 0.73;
   - measured against how much Bitcoin moved over the rest of each contract's life, it is about the same in a typical week.
-- **Near Friday the surface has no far strikes.** By then those contracts are almost certain (1¢ or 99¢) and carry no information about volatility.
+- **Near Friday the surface has no far strikes.** In dollar terms the usable strike range contracts because distant contracts become almost certain (1¢ or 99¢). The standardized plots adjust for that shrinking expected move; sparse cells remain blank.
 
 ## Figures (`outputs/`)
 
-- `figures/iv_surface_heatmap.png`: volatility by moneyness and time to Friday
+- `figures/iv_surface_heatmap.png`: volatility by ATM standard deviations from current spot and time to Friday
 - `figures/atm_term_structure.png`: volatility at today's price by hours left
 - `figures/atm_vs_realized.png`: Kalshi's volatility against Bitcoin's realized volatility, day by day
 - `figures/smile_<weekly>_72h.png`, `_24h`, `_6h`: example smiles for the latest week

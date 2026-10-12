@@ -204,15 +204,16 @@ def winsorize_by_group(x, groups, lower=0.01, upper=0.99) -> pd.Series:
 def pooled_surface(df: pd.DataFrame, h_edges, m_edges, min_obs: int = 200, min_snaps: int = 20) -> pd.DataFrame:
     """Shape-normalized surface: median(iv / snapshot ATM vol) per cell x median ATM vol of that time bin.
 
+    The horizontal coordinate sd_from_spot = (K / spot - 1) / (snapshot ATM IV * sqrt(tau)).
     Pooling raw vols mixes volatility regimes: near expiry, far strikes only have usable quotes on very
     volatile days, so raw medians spike at the edges. Pooling each snapshot's smile relative to its own
     ATM vol and rescaling by the typical ATM vol of the time bin removes that selection effect. Cells
     with fewer than `min_obs` strike-snapshots or `min_snaps` distinct snapshots are left empty.
-    `df` needs snap, hours_to_expiry, moneyness, atm_iv and iv_surface. Returns time bins x moneyness bins.
+    `df` needs snap, hours_to_expiry, sd_from_spot, atm_iv and iv_surface. Returns time bins x ATM standard-deviation bins.
     """
     d = df[df.iv_surface.notna()].assign(
         h=lambda x: pd.cut(x.hours_to_expiry, h_edges, include_lowest=True),
-        m=lambda x: pd.cut(x.moneyness, m_edges, include_lowest=True),
+        m=lambda x: pd.cut(x.sd_from_spot, m_edges, include_lowest=True),
         ratio=lambda x: x.iv_surface / x.atm_iv,
     ).dropna(subset=["h", "m"])
     atm = d.drop_duplicates("snap").groupby("h", observed=False).atm_iv.median()

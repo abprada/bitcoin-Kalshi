@@ -11,9 +11,9 @@ def _():
     import pandas as pd
     import altair as alt
 
-    from lib import compare
+    from lib import compare, pairs
 
-    return alt, compare, mo, np, pd
+    return alt, compare, mo, np, pairs, pd
 
 
 @app.cell
@@ -45,38 +45,42 @@ def _(alt):
 
 
 @app.cell
-def _(compare, mo, np, pd):
+def _(compare, mo, np, pairs, pd):
     ROOT = mo.notebook_dir()
+    # vols: Deribit trades paired with Kalshi in the same minute; prices: Kalshi snapshots with Deribit within 15 min
+    paired = pairs.build_pairs(ROOT)["pairs"]
     _c = compare.build_comparison(ROOT)
     matched, smiles, trades = _c["matched"], _c["smiles"], _c["trades"]
     kalshi_snaps = pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet",
                                    columns=["event_ticker", "clean", "atm_iv"])
 
     # headline numbers, all computed here
-    _atm = matched[matched.log_moneyness.abs() < 0.005].dropna(subset=["vol_gap_adj"])
-    _far = matched[matched.moneyness_bucket == "5–15% below"].dropna(subset=["vol_gap_adj"])
+    _atm = pairs.atm(paired)
+    _head = pairs.gap_table(_atm.assign(all=1), "all").iloc[0]
+    _by_sd = pairs.gap_table(paired, "sd_bucket").assign(sd=lambda d: d.sd_bucket.astype(float)).set_index("sd")
+    _by_tte = _atm.groupby("tte_bucket", observed=True).gap_adj.median()
     _p = matched.dropna(subset=["deribit_digital_adj", "deribit_digital_raw", "bid", "ask"])
     _edge = 100 * np.maximum(_p.bid - compare.kalshi_fee(_p.bid) - _p.deribit_digital_adj,
                              _p.deribit_digital_adj - _p.ask - compare.kalshi_fee(_p.ask))
-    per_snap = pd.DataFrame([dict(ts=v["ts"], kalshi_atm=v["kalshi_atm"],
-                                  deribit_atm=float(compare.interp_vol(0.0, v["smile"].log_moneyness, v["smile"].vol)),
-                                  ratio=v["ratio"]) for v in smiles.values()])
-    per_snap["deribit_atm_adj"] = per_snap.deribit_atm * per_snap.ratio
-    daily = (per_snap.assign(day=per_snap.ts.dt.tz_convert(None).dt.normalize())
-             .groupby("day")[["kalshi_atm", "deribit_atm", "deribit_atm_adj"]].median().reset_index())
+    daily = (_atm.groupby("day")[["kalshi_iv", "deribit_iv", "deribit_iv_adj"]].median().reset_index()
+             .rename(columns={"kalshi_iv": "kalshi_atm", "deribit_iv": "deribit_atm", "deribit_iv_adj": "deribit_atm_adj"})
+             .assign(day=lambda d: pd.to_datetime(d.day)))
     stats = dict(
+        pairs=len(paired), pair_days=paired.day.nunique(), pair_weeklies=paired.event_ticker.nunique(),
         snapshots=matched.ts.nunique(), days=matched.ts.dt.date.nunique(), weeklies=matched.event_ticker.nunique(),
         kalshi_strikes=len(matched), deribit_trades=len(trades),
-        atm_gap_raw=_atm.vol_gap_raw.median(), atm_gap_adj=_atm.vol_gap_adj.median(),
-        atm_kalshi_higher=(_atm.vol_gap_adj > 0).mean(), far_gap_adj=_far.vol_gap_adj.median(),
+        atm_gap_raw=_atm.gap_raw.median(), atm_gap_adj=_head.median_gap, atm_ci_low=_head.ci_low,
+        atm_ci_high=_head.ci_high, atm_kalshi_higher=_head.kalshi_higher,
+        far_gap_adj=_by_sd.loc[-2.0, "median_gap"], far_up_adj=_by_sd.loc[2.0, "median_gap"],
+        week_gap_adj=_by_tte.get("5–7 days", np.nan), last_gap_adj=_by_tte.get("1–2 days", np.nan),
         price_gap_raw=(100 * (_p.mid - _p.deribit_digital_raw)).abs().median(),
         price_gap_adj=(100 * (_p.mid - _p.deribit_digital_adj)).abs().median(),
         kalshi_spread=100 * (_p.ask - _p.bid).median(),
         edge_0=(_edge > 0).mean(), edge_0_median=_edge[_edge > 0].median(), edge_5=(_edge > 5).mean(),
         corr=daily[["kalshi_atm", "deribit_atm_adj"]].corr().iloc[0, 1],
-        ratio_lo=matched.horizon_ratio.min(), ratio_hi=matched.horizon_ratio.max(),
+        ratio_lo=paired.horizon_ratio.min(), ratio_hi=paired.horizon_ratio.max(),
     )
-    return daily, kalshi_snaps, matched, smiles, stats
+    return daily, kalshi_snaps, matched, paired, smiles, stats
 
 
 @app.cell
@@ -95,16 +99,21 @@ def _(mo, stats):
     1. **Prices agree to about a cent or two.** Put in the same units, Kalshi's price and Deribit's price for the
        same contract differ by a typical **{stats['price_gap_adj']:.1f}¢**, about Kalshi's own bid-ask spread
        ({stats['kalshi_spread']:.0f}¢).
-    2. **Volatility at the current price differs by about a point.** Kalshi's implied vol is
-       **{stats['atm_gap_adj']:+.1f} points** above Deribit's (higher {stats['atm_kalshi_higher']:.0%} of the time),
-       and the two move together day to day (correlation **{stats['corr']:.2f}**).
-    3. **The clear difference is crash protection.** Far below the current price, Deribit's vol is about
-       **{-stats['far_gap_adj']:.0f} points higher** than Kalshi's: Deribit traders pay more for downside insurance.
+    2. **Volatility at the current price differs by about two points.** Comparing every Deribit trade with Kalshi at
+       the same strike and minute ({stats['pairs']:,} pairs), Kalshi's implied vol is **{stats['atm_gap_adj']:+.1f}
+       points** above Deribit's (95% interval {stats['atm_ci_low']:+.1f} to {stats['atm_ci_high']:+.1f}; higher
+       {stats['atm_kalshi_higher']:.0%} of the time), and the two move together day to day (correlation
+       **{stats['corr']:.2f}**).
+    3. **The clear difference is crash protection.** Two standard deviations below the current price, Deribit's vol
+       is about **{-stats['far_gap_adj']:.0f} points higher** than Kalshi's: Deribit traders pay more for downside
+       insurance. Deribit's smile is steeper overall.
     4. **There is little free money.** Gaps beyond Kalshi's bid-ask are mostly smaller than the cost of trading on
        both exchanges: with an assumed 5¢ of Deribit costs per $1 contract, only **{stats['edge_5']:.0%}** of quotes
        still show an edge.
     5. **Getting the timing right is essential.** Deribit's options expire 13 hours before Kalshi's. Ignoring that
-       makes Kalshi look {stats['atm_gap_raw']:.0f} vol points too high instead of {stats['atm_gap_adj']:.0f}.
+       makes Kalshi look {stats['atm_gap_raw']:.1f} vol points higher instead of {stats['atm_gap_adj']:.1f}. Even after
+       the adjustment the gap grows toward expiry ({stats['week_gap_adj']:+.1f} a week out, {stats['last_gap_adj']:+.1f}
+       with 1–2 days left), so the adjustment deserves a further check.
     """)
     return
 
@@ -117,7 +126,9 @@ def _(mo, pd, stats, kalshi_snaps):
         ("Deribit", "BTC options (calls and puts), all expiring 08:00 UTC",
          f"{stats['deribit_trades']:,} trades in Friday expiries, 19:30–22:29 UTC, Jan – Sep 2026, with Deribit's mark price"),
         ("Bitcoin price", "Coinbase and Bitstamp, average", "every minute; within 0.015% of Kalshi's settlement index"),
-        ("Matched sample", "Kalshi snapshots with Deribit trades within 15 minutes",
+        ("Pairs (vols)", "every Deribit trade with Kalshi's vol at the same strike, at most 30 seconds apart",
+         f"{stats['pairs']:,} pairs on {stats['pair_days']} days ({stats['pair_weeklies']} weeks)"),
+        ("Snapshots (prices)", "Kalshi snapshots with Deribit trades within 15 minutes",
          f"{stats['snapshots']:,} snapshots on {stats['days']} days ({stats['weeklies']} weeks), "
          f"{stats['kalshi_strikes']:,} Kalshi strike-prices"),
     ], columns=["Source", "What", "Coverage"])
@@ -134,23 +145,27 @@ def _(mo, stats):
     price D(K) is the market's probability. Breeden and Litzenberger (1978): D(K) = −∂C/∂K, so **adding up Kalshi's
     prices across strikes gives call and put prices**, C(K) = ∫ above K of D. Beyond the last strike, the tails take a
     Black-Scholes shape bounded by Kalshi's own outer quotes. Put-call parity gives Kalshi's forward, and solving
-    Black-Scholes for each option gives one implied vol per strike, every 15 minutes. (Solving N(d₂) = price for
+    Black-Scholes for each option gives one implied vol per strike, at any minute. (Solving N(d₂) = price for
     each contract directly is too noisy near the current price and biased low by the smile, so it is not used.)
 
-    **Step 2. Line Kalshi up with Deribit.** Three mismatches, each handled:
+    **Step 2. Line Kalshi up with Deribit.** Kalshi quotes every strike every minute; our Deribit data are individual
+    trades, 19:30–22:29 UTC, at whatever strikes people trade. Three mismatches, each handled:
 
     | Mismatch | Fix |
     |---|---|
-    | **Time:** Deribit data are individual trades | Each Kalshi snapshot (every 15 min, 19:30–22:29 UTC) uses Deribit's mark prices from trades within 15 minutes, turned into a smile: vol by moneyness (strike ÷ BTC price) |
-    | **Strikes:** Deribit uses round thousands, Kalshi $500 steps | Deribit's smile is interpolated to Kalshi's strikes, never beyond the strikes Deribit traded |
+    | **Time** | Every Deribit trade is paired with Kalshi's ladder at the nearest minute, **at most 30 seconds apart**. Deribit's vol comes from its mark price (Deribit's fair value at that instant); fills at one strike in one minute count once |
+    | **Strikes** | Kalshi's vol is read at the Deribit trade's own strike: on Kalshi's ladder 3 times in 4, otherwise between the two neighbouring Kalshi strikes. Nothing is interpolated on the Deribit side |
     | **Expiry:** Deribit ends 08:00 UTC, Kalshi 13 hours later | Deribit's vol is **stretched** over the extra hours. Variance adds up hour by hour, and those 13 hours (Friday's US session) historically move 1.6× an average hour, so Deribit's vol is scaled up by ×{stats['ratio_lo']:.2f} (a week out) to ×{stats['ratio_hi']:.2f} (a day out). Results are shown with and without this step |
 
     **Step 3. Compare two ways.**
 
-    - **Implied vols:** Kalshi's vol against Deribit's at the same strike.
-    - **Prices:** Deribit's price for Kalshi's contract is a call spread, buy the K − 250 call and sell the K + 250
-      call, divided by $500, priced from Deribit's smile. It is compared with Kalshi's bid, ask and mid, in cents.
-      As a check without any model, the same is done from Deribit's observed prices at real strikes K ± 500.
+    - **Implied vols (pairs):** Kalshi's vol minus Deribit's for each pair, pooled by distance from the money in
+      standard deviations and by time to expiry. Intervals resample whole days.
+    - **Prices (snapshots):** Deribit's price for Kalshi's contract is a call spread, buy the K − 250 call and sell
+      the K + 250 call, divided by $500. That needs Deribit prices at two strikes at once, which single trades rarely
+      give, so here each Kalshi snapshot (every 15 minutes) uses the Deribit trades within 15 minutes, turned into a
+      smile. It is compared with Kalshi's bid, ask and mid, in cents. As a check without any model, the same is done
+      from Deribit's observed prices at real strikes K ± 500.
     """)
     return
 
@@ -214,14 +229,15 @@ def _(H, SLOT1, SLOT2, W, alt, daily, mo, stats):
                 color=alt.Color("market:N", title=None, scale=alt.Scale(domain=["Kalshi", "Deribit (stretched)"],
                                                                         range=[SLOT1, SLOT2])),
                 tooltip=[alt.Tooltip("day:T", format="%Y-%m-%d"), "market:N", alt.Tooltip("vol:Q", format=".1%")])
-        .properties(title="Figure 2 · Implied vol at the current price, daily median, Kalshi vs Deribit",
+        .properties(title="Figure 2 · Implied vol at the current price, daily median of the pairs, Kalshi vs Deribit",
                     width=W, height=H)
     )
     mo.vstack([
         mo.md(f"""
         **Figure 2: the two markets price the same amount of movement.** Day by day, Kalshi's and Deribit's implied
         vols at the current price rise and fall together (correlation **{stats['corr']:.2f}** over
-        {len(daily)} days), including the spikes in February and June 2026. Kalshi sits slightly above.
+        {len(daily)} days), including the spikes in February and June 2026. Kalshi sits slightly above, on
+        {(daily.kalshi_atm > daily.deribit_atm_adj).mean():.0%} of days.
         """),
         fig2,
     ])
@@ -229,29 +245,28 @@ def _(H, SLOT1, SLOT2, W, alt, daily, mo, stats):
 
 
 @app.cell
-def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, matched, mo, pd, stats):
-    _x = matched.dropna(subset=["vol_gap_raw"])
-    _by = (_x.groupby("moneyness_bucket", observed=True)[["vol_gap_raw", "vol_gap_adj"]].median().reset_index())
-    _long = _by.melt(id_vars=["moneyness_bucket"], var_name="version", value_name="gap")
-    _long["version"] = _long.version.map({"vol_gap_raw": "Deribit at its own expiry",
-                                         "vol_gap_adj": "Deribit stretched to Kalshi's expiry"})
-    _long["moneyness_bucket"] = _long.moneyness_bucket.astype(str)
+def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd, stats):
+    _t = pd.concat([pairs.gap_table(paired, "sd_bucket", col=c).assign(version=v)
+                    for c, v in [("gap_raw", "Deribit at its own expiry"), ("gap_adj", "Deribit stretched to Kalshi's expiry")]])
+    _t["sd"] = _t.sd_bucket.astype(float)
+    _t = _t[_t.pairs >= 100]
+    _color = alt.Color("version:N", title=None, scale=alt.Scale(
+        domain=["Deribit at its own expiry", "Deribit stretched to Kalshi's expiry"], range=[SLOT2, SLOT1]))
+    _x = alt.X("sd:Q", title="strike, in standard deviations from the current price (negative = below)")
     fig3 = (
-        alt.Chart(_long).mark_line(point=True)
-        .encode(x=alt.X("moneyness_bucket:N", sort=compare.MONEYNESS_LABELS, title="strike relative to the current price"),
-                y=alt.Y("gap:Q", title="Kalshi − Deribit (vol points)"),
-                color=alt.Color("version:N", title=None, scale=alt.Scale(
-                    domain=["Deribit at its own expiry", "Deribit stretched to Kalshi's expiry"], range=[SLOT2, SLOT1])),
-                tooltip=["moneyness_bucket:N", "version:N", alt.Tooltip("gap:Q", format="+.1f")])
-        .properties(title="Figure 3 · Implied vol gap across strikes (median)", width=W, height=H)
+        alt.Chart(_t).mark_area(opacity=0.15).encode(x=_x, y="ci_low:Q", y2="ci_high:Q", color=_color)
+        + alt.Chart(_t).mark_line(point=True).encode(
+            x=_x, y=alt.Y("median_gap:Q", title="Kalshi − Deribit (vol points)"), color=_color,
+            tooltip=["version:N", alt.Tooltip("sd:Q", title="SD"), alt.Tooltip("median_gap:Q", format="+.1f"), "pairs:Q"])
         + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
-    )
+    ).properties(title="Figure 3 · Implied vol gap across the smile (median; bands: 95% intervals)", width=W, height=H)
     mo.vstack([
         mo.md(f"""
-        **Figure 3: vols match near the current price; Deribit charges more for crash protection.** At the current
-        price, Kalshi is {stats['atm_gap_raw']:+.1f} points above Deribit as traded and **{stats['atm_gap_adj']:+.1f}**
-        after stretching Deribit to Kalshi's expiry. Far below the current price the gap turns negative
-        (**{stats['far_gap_adj']:+.1f}** points): Deribit's smile is steeper on the downside.
+        **Figure 3: Kalshi is richer near the current price; Deribit charges more for large moves.** Each pair compares
+        the two vols at the same strike and minute. At the current price, Kalshi is {stats['atm_gap_raw']:+.1f} points
+        above Deribit as traded and **{stats['atm_gap_adj']:+.1f}** after stretching Deribit to Kalshi's expiry. Two
+        standard deviations below, the gap turns clearly negative (**{stats['far_gap_adj']:+.1f}** points); two above,
+        it is {stats['far_up_adj']:+.1f}. Deribit's smile is steeper, above all on the downside.
         """),
         fig3,
     ])
@@ -326,32 +341,36 @@ def _(compare, matched, mo, np, pd, stats):
 
 
 @app.cell
-def _(mo):
-    mo.md(r"""
+def _(mo, stats):
+    mo.md(f"""
     ## Takeaways
 
     - **Kalshi's weekly Bitcoin contracts are priced consistently with the options market.** A prediction market
       and an options exchange, with different users and contract designs, imply nearly the same distribution for
       Friday's price.
-    - **The level of risk agrees; its shape differs.** Kalshi's vol is about a point higher at the current price,
-      and Deribit's is a few points higher far below it: options traders pay more for crash protection.
-    - **The remaining gaps are within trading costs**, which can persist because the users differ (Deribit does not
-      serve US residents), Kalshi requires full collateral and charges fees, and its prices move in 1¢ steps on $500
-      strikes.
-    - **Method point:** comparing the two requires aligning expiries; a 13-hour mismatch that includes the US
-      Friday session is enough to create a spurious 3-point vol gap.
+    - **The level of risk nearly agrees; its shape differs.** Kalshi's vol is about {stats['atm_gap_adj']:.0f} points
+      higher at the current price, and Deribit's is several points higher far below it: options traders pay more for
+      crash protection, so Deribit's smile is steeper.
+    - **The remaining price gaps are within trading costs**, which can persist because the users differ (Deribit does
+      not serve US residents), Kalshi requires full collateral and charges fees, and its prices move in 1¢ steps on
+      $500 strikes.
+    - **Method points:** the two markets must be compared at the same moment (every Deribit trade against Kalshi
+      within 30 seconds), and their expiries aligned; a 13-hour mismatch that includes the US Friday session is
+      enough to add {stats['atm_gap_raw'] - stats['atm_gap_adj']:.0f} vol points.
 
     ## Caveats and next steps
 
-    - The expiry stretch uses Bitcoin's **historical** hour-by-hour movement, not what traders expected that Friday.
-      Next: interpolate between Deribit's Friday 08:00 and Saturday 08:00 expiries, which bracket Kalshi's.
-    - Deribit marks are Deribit's fair values, not executable prices; its trading costs are assumed. Next: Deribit
-      order-book quotes.
+    - The expiry stretch uses Bitcoin's **historical** hour-by-hour movement, not what traders expected that Friday,
+      and the gap still grows toward expiry after it. Next: interpolate between Deribit's Friday 08:00 and Saturday
+      08:00 expiries, which bracket Kalshi's.
+    - Our Deribit data are trades only, 3 hours a day: the pairs give the average smile over the year, not a full
+      Deribit smile at any moment, and the far wings rest on few pairs. Next: Deribit option-chain quotes, which would
+      also give Deribit's real trading costs (its marks are fair values, not executable prices).
     - Kalshi's fee formula (7% × P × (1 − P), rounded up) is to be confirmed against the current schedule.
     - Q3 (probabilities): test whether Kalshi's prices come true as often as they say, against Deribit's.
 
     *Details: `03_iv_surface.py` (Kalshi implied vol), `04_deribit_exploration.py` (Deribit data),
-    `05_kalshi_vs_deribit.py` (full comparison). Code in `lib/`, 127 tests in `tests/`.*
+    `05_kalshi_vs_deribit.py` (full comparison). Code in `lib/` (the pairs in `lib/pairs.py`), tested in `tests/`.*
     """)
     return
 

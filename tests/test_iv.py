@@ -251,21 +251,21 @@ def _pool_frame():
     return pd.DataFrame({
         "snap": [1, 1, 2, 2],
         "hours_to_expiry": [30.0, 30.0, 30.0, 30.0],
-        "moneyness": [0.955, 1.005, 0.955, 1.005],
+        "sd_from_spot": [-0.75, 0.25, -0.75, 0.25],
         "atm_iv": [0.4, 0.4, 0.8, 0.8],
         "iv_surface": [0.44, 0.40, 1.04, 0.80],      # ratios to ATM: 1.1, 1.0 and 1.3, 1.0
     })
 
 
 def test_pooled_surface_scales_median_shape_by_median_atm():
-    # cell (0.95, 1.00]: median ratio 1.2 x median ATM 0.6 = 0.72; cell (1.00, 1.01]: 1.0 x 0.6 = 0.6
-    grid = iv.pooled_surface(_pool_frame(), h_edges=[24, 48], m_edges=[0.95, 1.0, 1.01], min_obs=1, min_snaps=1)
+    # cell (-1, 0]: median ratio 1.2 x median ATM 0.6 = 0.72; cell (0, 0.5]: 1.0 x 0.6 = 0.6
+    grid = iv.pooled_surface(_pool_frame(), h_edges=[24, 48], m_edges=[-1, 0, 0.5], min_obs=1, min_snaps=1)
     np.testing.assert_allclose(grid.to_numpy(), [[0.72, 0.60]])
 
 
 def test_pooled_surface_masks_cells_with_too_few_observations():
     import pandas as pd
-    df = pd.concat([_pool_frame(), pd.DataFrame({"snap": [1], "hours_to_expiry": [30.0], "moneyness": [1.015],
+    df = pd.concat([_pool_frame(), pd.DataFrame({"snap": [1], "hours_to_expiry": [30.0], "sd_from_spot": [0.75],
                                                  "atm_iv": [0.4], "iv_surface": [0.5]})], ignore_index=True)
-    grid = iv.pooled_surface(df, h_edges=[24, 48], m_edges=[0.95, 1.0, 1.01, 1.02], min_obs=2, min_snaps=2)
+    grid = iv.pooled_surface(df, h_edges=[24, 48], m_edges=[-1, 0, 0.5, 1], min_obs=2, min_snaps=2)
     np.testing.assert_allclose(grid.to_numpy(), [[0.72, 0.60, np.nan]])

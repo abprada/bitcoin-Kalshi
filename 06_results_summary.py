@@ -133,7 +133,7 @@ def _(kalshi_weeks, mo, pd, stats):
 
 @app.cell(hide_code=True)
 def _(mo, stats):
-    mo.md(f"""
+    mo.md(rf"""
     ## Method
 
     **Step 1. Turn Kalshi's prices into implied volatility** (notebook `03`). A Kalshi contract pays $1 above K, so its
@@ -152,10 +152,22 @@ def _(mo, stats):
     | **Strikes** | Kalshi's vol is read at the Deribit trade's own strike: on Kalshi's ladder 3 times in 4, otherwise between the two neighbouring Kalshi strikes. Nothing is interpolated on the Deribit side |
     | **Expiry:** Deribit ends 08:00 UTC, Kalshi 13 hours later | Deribit's vol is **stretched** over the extra hours. Variance adds up hour by hour, and those 13 hours (Friday's US session) historically move 1.6× an average hour, so Deribit's vol is scaled up by ×{stats['ratio_lo']:.2f} (a week out) to ×{stats['ratio_hi']:.2f} (a day out). Results are shown with and without this step |
 
-    **Step 3. Compare.** For each pair, Kalshi's vol minus Deribit's, pooled by distance from the current price in
-    standard deviations and by time to expiry. The 95% intervals resample whole days, because pairs on the same day
-    are not independent. As a check that needs almost no expiry adjustment, the same comparison is repeated **far from
-    expiry** (4–7 days left), where the 13 hours are about {stats['far_share']:.0%} of the horizon.
+    **Step 3. Compare.** For each pair, the **gap** = Kalshi's vol − Deribit's vol, in vol points (+1 = one percentage
+    point higher on Kalshi). Pairs are pooled two ways:
+
+    - **Distance from the current price, in standard deviations**:
+      $\text{{sd}} = \ln(K / F) \,/\, (\sigma_{{ATM}} \sqrt{{\tau}})$, with K the strike, F Kalshi's forward (the
+      average Friday price implied by Kalshi's ladder), σ_ATM Kalshi's at-the-money vol and τ Kalshi's time to expiry
+      in years, all at that minute. σ_ATM √τ is Kalshi's typical move to Friday 5pm, so sd counts typical moves; it
+      puts 1-day and 7-day contracts, and calm and volatile weeks, on one scale. The same Kalshi-based sd is used for
+      both markets in a pair. **At the money** = sd between −0.25 and +0.25; the charts use half-SD buckets.
+    - **Time to expiry**, in Kalshi's hours left (1–2, 2–3, 3–5, 5–7 days).
+
+    Each bucket reports the **median** gap (robust to a few extreme pairs in the wings), with a **95% interval** from
+    resampling whole days 500 times, because pairs on the same day are not independent. As a check that needs almost
+    no expiry adjustment, the comparison is repeated **far from expiry** (at least 4 days left), where the 13 hours are
+    about {stats['far_share']:.0%} of the horizon. Full definitions, with a worked example, are in the appendix of
+    `05_kalshi_vs_deribit.py`.
     """)
     return
 

@@ -35,6 +35,9 @@ def _(mo):
     the two markets far from expiry** (4–7 days left), where the 13 hours are a small share of the horizon and the
     conclusion hardly depends on the stretch.
 
+    **The appendix at the end defines every number exactly**: how a standard deviation from the money is computed,
+    what "at the money" means, the buckets, the medians and the 95% intervals, and the 13-hour factor.
+
     The code is in `lib/pairs.py` and `lib/deribit.py`, tested in `tests/`.
     Needs `02_clean_data.py` and `03_iv_surface.py` to have run. Writes nothing. Takes about two minutes.
     """)
@@ -545,6 +548,91 @@ def _(mo, pairs, paired):
     **Next.** Deribit option-chain quotes (Tardis.dev or similar) would give Deribit's full smile every minute. Test the
     expiry adjustment with Deribit's Saturday expiry. Extend to probabilities for Q3 (Kalshi vs Deribit vs realized
     outcomes).
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, np, pairs, paired, pd):
+    # Every definition, with the numbers of section 2's pair (Monday June 29, 21:45 UTC, the 58,500 strike)
+    _p = paired[(paired.minute == pd.Timestamp("2026-06-29 21:45", tz="UTC")) & (paired.strike == 58_500.0)].iloc[0]
+    _move = _p.kalshi_atm * np.sqrt(_p.tau_k)
+    mo.md(rf"""
+    ## Appendix · How every number is computed
+
+    The definitions behind every table and chart above, each with the numbers of the pair from section 2
+    (Monday June 29, 21:45 UTC, the {_p.strike:,.0f} strike).
+
+    **Deribit's vol for one observation.**
+    - Deribit's options are priced in bitcoin; mark price × Deribit's BTC index = the dollar price
+      ({_p.index_price:,.2f} index here).
+    - Black-Scholes is inverted on that dollar price with the forward set to Deribit's index, zero interest rates,
+      and the time left to Deribit's expiry (Friday 08:00 UTC) in years: hours ÷ 8,760 ({_p.tau_d * 8760:.1f} hours
+      here). Result: {_p.deribit_iv:.2%}.
+    - An observation is all trades in the same expiry and strike whose **nearest minute end** is the same (a trade
+      at 21:44:51 belongs to 21:45). Its vol is the **median** of those trades' vols, so an order split into many fills
+      counts once ({_p.n_trades:.0f} fills here). Calls and puts at the same strike are pooled: in theory they have
+      the same vol.
+
+    **Kalshi's vol at the same strike and minute.**
+    - Kalshi's quotes are recorded per minute and stamped at the **end** of the minute; the row at the trade's
+      nearest minute end is used, so the two prices are at most 30 seconds apart ({_p.max_offset_s:.0f} seconds here).
+    - That minute's ladder is turned into a smile exactly as in `03` (stacked ladder → calls and puts → Black-Scholes
+      inversion), using Kalshi's **own forward** F: the average Friday price implied by Kalshi's ladder (put-call
+      parity), not the exchange price. F = {_p.forward:,.2f} here, against ${_p.spot:,.2f} on the exchanges.
+    - The Deribit strike is usually a Kalshi strike, and then its vol is read directly. Otherwise it is interpolated
+      **linearly in log-strike** between the two neighbouring Kalshi strikes that have a vol. Nothing beyond the
+      ladder's last strikes is used. Here: on the ladder, {_p.kalshi_iv:.2%}.
+    - Kalshi's **ATM vol** σ_ATM is the smile at ln(K / F) = 0, interpolated the same way between the two strikes
+      around F: {_p.kalshi_atm:.2%} here.
+
+    **Standard deviations from the money** (the x-axis everywhere):
+
+    $$ \text{{sd}} = \frac{{\ln(K / F)}}{{\sigma_{{ATM}} \sqrt{{\tau}}}} $$
+
+    - K is the strike, F Kalshi's forward, σ_ATM Kalshi's ATM vol and τ Kalshi's time to expiry in years, all at
+      that minute.
+    - σ_ATM √τ is Kalshi's **typical move** (one standard deviation, in log terms) between now and Friday 5pm ET;
+      sd says how many typical moves the strike is from the forward. It puts a strike 1 day out and one 7 days out on
+      the same scale, and calm and volatile weeks too.
+    - The same Kalshi-based sd is used for both markets in a pair, so their x-value is identical.
+    - Here: ln({_p.strike:,.0f} / {_p.forward:,.2f}) = {_p.log_moneyness:+.4f}; typical move
+      {_p.kalshi_atm:.4f} × √({_p.kalshi_hours:.1f} / 8,760) = {_move:.4f}; **sd = {_p.sd:+.2f}**.
+
+    **Pooling.**
+    - **Gap** = 100 × (Kalshi vol − Deribit vol), in vol points: +1 means Kalshi's vol is one percentage point higher.
+      "Stretched" uses Deribit's vol × the 13-hour factor; "as traded" or "no stretch" uses it unchanged.
+    - **At the money** = sd between −0.25 and +0.25.
+    - **SD buckets** are half a standard deviation wide, labelled by their centre (−3, −2.5, …, +3): bucket −0.5 holds
+      sd from −0.75 up to and including −0.25. This pair (sd {_p.sd:+.2f}) is in bucket −0.5.
+    - **Time-to-expiry buckets** use Kalshi's hours left: 1–2 days (24–48 h), 2–3 days (48–72 h), 3–5 days
+      (72–120 h), 5–7 days (120–170 h). **Far from expiry** (section 5) = at least
+      {pairs.FAR_FROM_EXPIRY_HOURS} hours (4 days) left. This pair: {_p.kalshi_hours:.1f} hours, so it is in
+      "{_p.tte_bucket}" and {"also" if _p.kalshi_hours >= pairs.FAR_FROM_EXPIRY_HOURS else "just short of"}
+      "far from expiry".
+    - Every number reported per bucket is the **median** gap, not the mean, so a few extreme pairs (often deep in the
+      wings, where one cent moves the vol a lot) do not drive it. Each observation counts once, whatever its size.
+    - "**Kalshi higher**" = share of pairs with a positive gap.
+    - **95% intervals** resample whole days: draw as many days as there are, with replacement; pool their pairs; take
+      the median gap; repeat 500 times; report the 2.5th and 97.5th percentiles of those medians. Days, not pairs,
+      because pairs on the same day share the market's mood, and treating them as independent would make the
+      intervals too narrow.
+    - Charts drop buckets with fewer than 100 pairs; the grid in section 4 leaves cells with fewer than 50 empty.
+    - **Daily series**: per day, the median Kalshi vol and the median (stretched) Deribit vol over the pairs at the
+      money; the correlation is between those two daily series.
+    - **Smile shape** (section 4): each vol divided by Kalshi's ATM vol at that minute before taking medians, so a
+      1.10 means 10% above the ATM vol, whatever the week's overall level.
+
+    **The 13-hour factor.**
+    - Hour-of-week profile: from Bitcoin's 1-minute prices (Coinbase and Bitstamp), the average squared 1-minute log
+      return in each of the 168 hours of the week, × 60 to make it per hour.
+    - V(t, T) = the sum of that profile from t to T, partial hours counted pro rata: the movement history expects
+      between t and T.
+    - Factor = √( [V(t, T_Kalshi) ÷ hours to T_Kalshi] ÷ [V(t, T_Deribit) ÷ hours to T_Deribit] ), computed for each
+      pair's own minute and applied to Deribit's vol at every strike ({_p.horizon_ratio:.4f} here).
+    - The sensitivity table in section 5 recomputes the factor after multiplying the profile for Friday 08:00–23:00 UTC
+      (the hours that contain the extra 13) by 1.5, and also with no factor at all (equivalent to every hour being
+      alike).
     """)
     return
 

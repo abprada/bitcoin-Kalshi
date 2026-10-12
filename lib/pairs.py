@@ -175,6 +175,36 @@ def far_from_expiry(pairs: pd.DataFrame, hours: float = FAR_FROM_EXPIRY_HOURS) -
     return pairs[pairs.kalshi_hours >= hours]
 
 
+# Kalshi hours to expiry, one row per day: Deribit trades only in the US afternoon, so every pair is within about two
+# hours of a whole number of days before Kalshi's Friday 5pm expiry; rows are centred on 1, 2, ..., 7 days
+SURFACE_HOURS = list(range(12, 181, 24))
+
+
+def surface(pairs: pd.DataFrame, hour_edges=SURFACE_HOURS, sd_edges=SD_EDGES, min_pairs: int = 40) -> pd.DataFrame:
+    """Kalshi and Deribit (stretched) implied-vol surfaces on the same pairs, plus their gap, by time to expiry and
+    distance from the money in standard deviations.
+
+    As for 03's surface, vols are pooled as shapes: each pair's vols divided by Kalshi's ATM vol at that minute, the
+    median per cell, times the median Kalshi ATM vol of that time-to-expiry row; this keeps calm and volatile weeks
+    from distorting the edges. The gap is the median of the pairs' own gaps (vol points), not the difference of the
+    two surfaces. Cells with fewer than `min_pairs` pairs are dropped. One row per cell: `hours_lo`, `hours_hi`,
+    `sd` (bucket centre), `kalshi`, `deribit`, `gap`, `pairs`, `days`.
+    """
+    d = pairs.assign(h=pd.cut(pairs.kalshi_hours, hour_edges), m=pd.cut(pairs.sd, sd_edges),
+                     k_ratio=pairs.kalshi_iv / pairs.kalshi_atm, d_ratio=pairs.deribit_iv_adj / pairs.kalshi_atm
+                     ).dropna(subset=["h", "m"])
+    row_atm = d.groupby("h", observed=True).kalshi_atm.median()
+    g = (d.groupby(["h", "m"], observed=True)
+         .agg(k_ratio=("k_ratio", "median"), d_ratio=("d_ratio", "median"), gap=("gap_adj", "median"),
+              pairs=("gap_adj", "size"), days=("day", "nunique"))
+         .reset_index())
+    g = g[g.pairs >= min_pairs]
+    atm_row = g.h.map(row_atm).astype(float)
+    return pd.DataFrame({"hours_lo": [i.left for i in g.h], "hours_hi": [i.right for i in g.h],
+                         "sd": [round(i.mid, 2) for i in g.m], "kalshi": g.k_ratio * atm_row,
+                         "deribit": g.d_ratio * atm_row, "gap": g.gap, "pairs": g.pairs, "days": g.days}).reset_index(drop=True)
+
+
 def gap_with_profile(pairs: pd.DataFrame, profile: pd.Series) -> pd.Series:
     """Kalshi - Deribit (vol points) with Deribit stretched by another hour-of-week variance profile, to test how
     much the result depends on the historical one."""

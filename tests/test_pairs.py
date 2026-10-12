@@ -75,6 +75,19 @@ def test_far_from_expiry_keeps_four_days_or_more():
     assert pairs.far_from_expiry(p).kalshi_hours.tolist() == [96.0, 160.0]
 
 
+def test_surface_scales_shapes_by_the_rows_atm_vol_and_drops_thin_cells():
+    # one row (24-36 h), ATM vols 0.4 and 0.6 (median 0.5); bucket 0: Kalshi 1.0x ATM, Deribit 0.9x; bucket +1: one pair
+    p = pd.DataFrame({"kalshi_hours": [30.0, 30.0, 30.0], "sd": [0.0, 0.1, 1.0], "kalshi_atm": [0.4, 0.6, 0.5],
+                      "kalshi_iv": [0.4, 0.6, 0.55], "deribit_iv_adj": [0.36, 0.54, 0.5], "gap_adj": [4.0, 6.0, 5.0],
+                      "day": ["a", "b", "a"]})
+    s = pairs.surface(p, hour_edges=[24, 36], min_pairs=2)
+    assert len(s) == 1                                                    # the +1 SD cell has one pair
+    row = s.iloc[0]
+    assert (row.hours_lo, row.hours_hi, row.sd, row.pairs, row.days) == (24, 36, 0.0, 2, 2)
+    assert row.kalshi == pytest.approx(0.5) and row.deribit == pytest.approx(0.45)
+    assert row.gap == pytest.approx(5.0)
+
+
 def test_gap_with_a_flat_profile_is_the_unstretched_gap():
     # if every hour of the week carries the same variance, the 13 extra hours change nothing
     p = pd.DataFrame({"minute": [T0], "kalshi_expiry": [pd.Timestamp("2026-07-03 21:00", tz="UTC")],

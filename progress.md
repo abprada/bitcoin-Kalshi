@@ -139,7 +139,9 @@ The collaborator's file has **205,896 Deribit option trades** from January 15 to
 1. **Prices:** a Deribit call spread from K − $250 to K + $250, divided by $500, pays like Kalshi's "above K" contract. Its cost is Deribit's price for Kalshi's contract, in cents.
 2. **Volatilities:** both markets turned into implied volatility.
 
-Each Kalshi snapshot (every 15 minutes, 19:30–22:29 UTC) is paired with Deribit's mark prices from within 15 minutes, in the Friday expiry with the same date: **1,861 snapshots on 241 days**. Deribit's volatilities are interpolated to Kalshi's strikes (never beyond the strikes Deribit traded).
+Each Kalshi snapshot (every 15 minutes, 19:30–22:29 UTC) is paired with Deribit's mark prices from within 15 minutes, in the Friday expiry with the same date: **2,118 snapshots on 249 days**. Deribit's volatilities are interpolated to Kalshi's strikes (never beyond the strikes Deribit traded).
+
+Which Kalshi snapshots are used: those with a volatility at today's price and enough strikes, as in `03`'s quality check, but **without** the "expected Friday price within 0.25% of the exchange price" rule. That rule dropped 14% of snapshots, mostly 3–7 days before expiry; the large gaps neither follow nor predict Bitcoin's moves, and Kalshi's volatilities are computed against Kalshi's own expected price, so they are not distorted by it. Keeping them changes no result (with the rule: 1,861 snapshots, 1.13 points at today's price; without: 1.09). Bad individual quotes are still removed strike by strike (gap between bid and ask over 20¢, or a quote older than 15 minutes).
 
 **The 13-hour gap.** Deribit has no option ending when Kalshi's does, so we stretch Deribit's volatility over Kalshi's extra hours. Those hours are Friday's US session, which historically moves 1.6 times as much as an average hour of the week, so Deribit's volatility is raised by about 3% of itself (1.03×). Results are shown with and without this step, because it is an assumption.
 

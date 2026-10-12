@@ -68,3 +68,16 @@ def test_gap_table_counts_days_and_brackets_the_median():
 def test_atm_is_within_a_quarter_standard_deviation():
     p = pd.DataFrame({"sd": [-0.3, -0.25, 0.0, 0.25, 0.3]})
     assert pairs.atm(p).sd.tolist() == [-0.25, 0.0, 0.25]
+
+
+def test_far_from_expiry_keeps_four_days_or_more():
+    p = pd.DataFrame({"kalshi_hours": [30.0, 95.9, 96.0, 160.0]})
+    assert pairs.far_from_expiry(p).kalshi_hours.tolist() == [96.0, 160.0]
+
+
+def test_gap_with_a_flat_profile_is_the_unstretched_gap():
+    # if every hour of the week carries the same variance, the 13 extra hours change nothing
+    p = pd.DataFrame({"minute": [T0], "kalshi_expiry": [pd.Timestamp("2026-07-03 21:00", tz="UTC")],
+                      "deribit_expiry": [pd.Timestamp("2026-07-03 08:00", tz="UTC")],
+                      "kalshi_iv": [0.53], "deribit_iv": [0.49]})
+    assert pairs.gap_with_profile(p, pd.Series(np.ones(168))).iloc[0] == pytest.approx(4.0)

@@ -80,3 +80,13 @@ def test_horizon_vol_ratio():
     busy.iloc[4 * 24 + 8: 4 * 24 + 22] = 3.0                        # the 14 extra Friday hours carry 3x variance
     # per hour: (84 + 14 * 3) / 98 vs 84 / 84
     assert deribit.horizon_vol_ratio(start, long_end, short_end, busy) == pytest.approx(np.sqrt(126 / 98))
+
+
+def test_horizon_vol_ratios_match_the_hour_by_hour_version():
+    rng = np.random.default_rng(1)
+    prof = pd.Series(rng.uniform(0.5, 3.0, 168))
+    start = pd.DatetimeIndex(["2026-03-02 20:17", "2026-03-05 21:44:30", "2026-03-06 23:10"], tz="UTC")
+    short_end = pd.DatetimeIndex(["2026-03-06 08:00", "2026-03-06 08:00", "2026-03-13 08:00"], tz="UTC")
+    long_end = pd.DatetimeIndex(["2026-03-06 22:00", "2026-03-06 22:00", "2026-03-13 21:00"], tz="UTC")  # 3rd crosses a week
+    loop = [deribit.horizon_vol_ratio(a, b, c, prof) for a, b, c in zip(start, long_end, short_end)]
+    np.testing.assert_allclose(deribit.horizon_vol_ratios(start, long_end, short_end, prof), loop, rtol=1e-9)

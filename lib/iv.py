@@ -16,6 +16,12 @@ SIGMA_LO, SIGMA_HI = 0.01, 5.0   # implied vol search range
 SIGMA_PRIOR = 0.5                # reference vol for picking the branch of the binary inversion
 _ITERS = 100                     # bisection steps: brackets shrink far below float precision
 
+# Which Kalshi quotes make a ladder (03 and lib/pairs.py)
+MAX_QUOTE_AGE_MIN = 15           # a quote at most 15 minutes old
+PRICE_BAND = (0.02, 0.98)        # ladder mids between 2c and 98c
+MIN_HOURS_TO_EXPIRY = 1.0        # at least 1 hour before expiry
+MIN_STRIKES = 5                  # at least 5 ladder strikes, spanning spot
+
 
 def bs_call(F, K, sigma, tau):
     F, K, sigma = (np.asarray(x, dtype=float) for x in (F, K, sigma))
@@ -133,6 +139,23 @@ def tail_bounds(K, D, K_out, bid_out, ask_out) -> dict:
         "K_up": float(K_out[up][-1]) if len(up) else float(K[-1]),
         "K_dn": float(K_out[dn][-1]) if len(dn) else float(K[0]),
     }
+
+
+def ladder_quotes(d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split clean Kalshi quotes (02's columns) into ladder quotes and outer quotes, minute by minute.
+
+    Kept at all: exchange open, quote at most MAX_QUOTE_AGE_MIN old, at least MIN_HOURS_TO_EXPIRY to go.
+    Ladder: usable mids (02's spread rule) priced inside PRICE_BAND. Outer: every other quoted strike, used
+    only to bound the tails (`tail_bounds`).
+    """
+    d = d[d.exchange_open & (d.quote_age_min <= MAX_QUOTE_AGE_MIN) & (d.tau_years * 8760 >= MIN_HOURS_TO_EXPIRY)]
+    ladder = d.usable & d.mid.between(*PRICE_BAND)
+    return d[ladder], d[~ladder & (d.bid.notna() | d.ask.notna())]
+
+
+def ladder_ok(n_strikes, lo, hi, spot) -> np.ndarray:
+    """A ladder is used if it has at least MIN_STRIKES strikes and they span spot (lowest below, highest above)."""
+    return (np.asarray(n_strikes) >= MIN_STRIKES) & (np.asarray(lo) < np.asarray(spot)) & (np.asarray(hi) > np.asarray(spot))
 
 
 def snapshot_iv(K, mid, weight, F, tau, K_out=(), bid_out=(), ask_out=()) -> tuple[pd.DataFrame, dict]:

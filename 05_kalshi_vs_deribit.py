@@ -10,10 +10,11 @@ def _():
     import numpy as np
     import pandas as pd
     import altair as alt
+    import plotly.graph_objects as go
 
     from lib import compare, deribit, pairs
 
-    return alt, compare, deribit, mo, np, pairs, pd
+    return alt, compare, deribit, go, mo, np, pairs, pd
 
 
 @app.cell(hide_code=True)
@@ -392,14 +393,103 @@ def _(H, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
                 tooltip=[alt.Tooltip("day:T", format="%Y-%m-%d"), "market:N", alt.Tooltip("vol:Q", format=".1%")])
         .properties(title="At-the-money vol, daily median of the pairs", width=W, height=H)
     )
+    _above = (_d["Kalshi"] > _d["Deribit (stretched)"]).mean()
     mo.vstack([
         mo.md(f"""
         **Day by day** ({len(_d)} days with pairs at the money), the two markets' vols rise and fall together
-        (correlation **{_corr:.2f}**), with Kalshi above on {(_d.Kalshi > _d["Deribit (stretched)"]).mean():.0%} of days.
+        (correlation **{_corr:.2f}**), with Kalshi above on {_above:.0%} of days.
         """),
         daily_chart,
     ])
     return
+
+
+@app.cell(hide_code=True)
+def _(W, alt, go, mo, pairs, paired, pd):
+    # The surfaces: Kalshi, Deribit (stretched) and their gap, by days to Kalshi's expiry x standard deviations
+    surf = pairs.surface(paired)
+    surf["to_expiry"] = ((surf.hours_lo + surf.hours_hi) / 48).round().astype(int)
+    surf["row"] = surf.to_expiry.map(lambda d: f"{d} day" + ("s" if d > 1 else ""))
+    _rows = [f"{d} day" + ("s" if d > 1 else "") for d in sorted(surf.to_expiry.unique())]
+    _x = alt.X("sd:O", title="standard deviations from the money", axis=alt.Axis(labelAngle=0))
+    _y = alt.Y("row:O", title="time to Kalshi's expiry", sort=_rows)
+    _tip = [alt.Tooltip("row:N", title="to expiry"), alt.Tooltip("sd:Q", title="SD"),
+            alt.Tooltip("kalshi:Q", format=".1%", title="Kalshi"), alt.Tooltip("deribit:Q", format=".1%", title="Deribit"),
+            alt.Tooltip("gap:Q", format="+.1f", title="gap (points)"), "pairs:Q", alt.Tooltip("days:Q", title="days with pairs")]
+    _vol_scale = alt.Scale(range=["#cde2fb", "#0d366b"], domain=[0.35, 0.80], clamp=True)   # as in 03
+
+    def _level(col, title):
+        base = alt.Chart(surf).encode(x=_x, y=_y, tooltip=_tip)
+        return (base.mark_rect().encode(color=alt.Color(f"{col}:Q", title="implied vol", scale=_vol_scale,
+                                                        legend=alt.Legend(format="%")))
+                + base.mark_text(fontSize=9).encode(
+                    text=alt.Text(f"{col}:Q", format=".0%"),
+                    color=alt.condition(f"datum.{col} > 0.6", alt.value("white"), alt.value("#0b0b0b")))
+                ).properties(title=title, width=W // 2 - 20, height=200)
+
+    levels_chart = alt.hconcat(_level("kalshi", "Kalshi"), _level("deribit", "Deribit (stretched)")).resolve_scale(color="shared")
+    _gap_scale = alt.Scale(domain=[-8, 0, 8], range=["#c4501f", "#f2f1ec", "#1f5fae"], clamp=True,
+                           interpolate="rgb")   # orange < 0 < blue, straight blends (no detour through green)
+    _base = alt.Chart(surf).encode(x=_x, y=_y, tooltip=_tip)
+    gap_surface_chart = (
+        _base.mark_rect().encode(color=alt.Color("gap:Q", title="Kalshi − Deribit (points)", scale=_gap_scale))
+        + _base.mark_text(fontSize=10).encode(
+            text=alt.Text("gap:Q", format="+.1f"),
+            color=alt.condition("abs(datum.gap) > 5", alt.value("white"), alt.value("#0b0b0b")))
+    ).properties(title="Gap surface: Kalshi − Deribit, stretched (blue: Kalshi higher; orange: Deribit higher)",
+                 width=W, height=230)
+
+    # rotatable 3D: both surfaces on the same axes
+    _sd = sorted(surf.sd.unique())
+    _days = sorted(surf.to_expiry.unique())
+    _grid = lambda c: surf.pivot(index="to_expiry", columns="sd", values=c).reindex(index=_days, columns=_sd).to_numpy()
+    surface_3d = go.Figure([
+        go.Surface(x=_sd, y=_days, z=_grid("kalshi"), name="Kalshi", colorscale=[[0, "#cde2fb"], [1, "#0d366b"]],
+                   showscale=False, opacity=0.95,
+                   hovertemplate="Kalshi<br>SD %{x}<br>%{y} days<br>vol %{z:.1%}<extra></extra>"),
+        go.Surface(x=_sd, y=_days, z=_grid("deribit"), name="Deribit", colorscale=[[0, "#fbd9c8"], [1, "#b8461b"]],
+                   showscale=False, opacity=0.75,
+                   hovertemplate="Deribit (stretched)<br>SD %{x}<br>%{y} days<br>vol %{z:.1%}<extra></extra>"),
+    ])
+    surface_3d.update_layout(
+        title="Kalshi (blue) and Deribit stretched (orange) implied-vol surfaces: drag to rotate",
+        scene=dict(xaxis_title="standard deviations from the money", yaxis_title="days to Kalshi's expiry",
+                   zaxis=dict(title="implied vol", tickformat=".0%")),
+        height=560, margin=dict(l=0, r=0, t=40, b=0))
+
+    _g = surf.set_index(["to_expiry", "sd"]).gap
+    _centre = surf[surf.sd.between(0.0, 1.0)]
+    _down = surf[surf.sd <= -1.5]
+    mo.vstack([
+        mo.md(f"""
+        ### The surfaces: all distances and expiries at once
+
+        The same pairs, laid out by distance from the money (columns, half a standard deviation wide) and time to
+        Kalshi's expiry (rows). Deribit trades only in the US afternoon, so every pair is within about two hours of a
+        whole number of days before Kalshi's Friday 5pm expiry, and each row is one day. As for `03`'s surface, each
+        vol is divided by Kalshi's ATM vol at that minute, the median is taken per cell, and the result is scaled back
+        by the row's typical ATM vol, so calm and volatile weeks do not distort the edges. Both markets are pooled on
+        exactly the same pairs; Deribit is stretched to Kalshi's expiry. Cells with fewer than 40 pairs are empty.
+        """),
+        levels_chart,
+        mo.md(f"""
+        **The gap surface** is the median of the pairs' own gaps in each cell (vol points), so it is the comparison
+        itself, not the difference of the two pictures above:
+
+        - From the money to one standard deviation above, **Kalshi is higher in {(_centre.gap > 0).sum()} of
+          {len(_centre)} cells** (from {_centre.gap.min():+.1f} to {_centre.gap.max():+.1f} points).
+        - From 1.5 standard deviations below, **Deribit is higher in {(_down.gap < 0).sum()} of {len(_down)} cells**
+          (from {_down.gap.max():+.1f} to {_down.gap.min():+.1f} points): its smile is steeper on the downside at
+          every horizon.
+        - **With one day left both wings swing hard** toward Deribit ({_g.get((1, -2.0), float('nan')):+.1f} at
+          −2 standard deviations, {_g.get((1, 2.0), float('nan')):+.1f} at +2): this is where the 13 extra hours are
+          the largest share of what is left, so it is the row that depends most on the stretch.
+        """),
+        gap_surface_chart,
+        mo.md("**Both surfaces in 3D** (drag to rotate, hover for values). Gaps in a surface are cells with too few pairs."),
+        surface_3d,
+    ])
+    return (surf,)
 
 
 @app.cell(hide_code=True)
@@ -622,6 +712,10 @@ def _(mo, np, pairs, paired, pd):
       money; the correlation is between those two daily series.
     - **Smile shape** (section 4): each vol divided by Kalshi's ATM vol at that minute before taking medians, so a
       1.10 means 10% above the ATM vol, whatever the week's overall level.
+    - **Surfaces** (section 4): rows are days to Kalshi's expiry (pairs within 12 hours either side of 1, 2, …, 7
+      days), columns the half-SD buckets. Kalshi's and Deribit's (stretched) surfaces: per cell, the median of
+      vol ÷ Kalshi's ATM vol, times the median Kalshi ATM vol of that row. The gap surface: per cell, the median of
+      the pairs' gaps. Cells with fewer than 40 pairs are left empty.
 
     **The 13-hour factor.**
     - Hour-of-week profile: from Bitcoin's 1-minute prices (Coinbase and Bitstamp), the average squared 1-minute log

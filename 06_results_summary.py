@@ -281,6 +281,39 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, hour_profile, mo, pairs, paired, pd, stats
 
 
 @app.cell(hide_code=True)
+def _(W, alt, mo, pairs, paired):
+    _s = pairs.surface(paired)
+    _s["row"] = ((_s.hours_lo + _s.hours_hi) / 48).round().astype(int).map(lambda d: f"{d} day" + ("s" if d > 1 else ""))
+    _rows = sorted(_s.row.unique(), key=lambda r: int(r.split()[0]))
+    _base = alt.Chart(_s).encode(
+        x=alt.X("sd:O", title="standard deviations from the current price", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("row:O", title="time to Kalshi's expiry", sort=_rows),
+        tooltip=[alt.Tooltip("row:N", title="to expiry"), alt.Tooltip("sd:Q", title="SD"),
+                 alt.Tooltip("gap:Q", format="+.1f", title="gap (points)"), "pairs:Q"])
+    fig4 = (
+        _base.mark_rect().encode(color=alt.Color("gap:Q", title="Kalshi − Deribit (points)", scale=alt.Scale(
+            domain=[-8, 0, 8], range=["#c4501f", "#f2f1ec", "#1f5fae"], clamp=True, interpolate="rgb")))
+        + _base.mark_text(fontSize=10).encode(
+            text=alt.Text("gap:Q", format="+.1f"),
+            color=alt.condition("abs(datum.gap) > 5", alt.value("white"), alt.value("#0b0b0b")))
+    ).properties(title="Figure 4 · Gap surface, Kalshi − Deribit stretched (blue: Kalshi higher; orange: Deribit higher)",
+                 width=W, height=230)
+    _centre, _down = _s[_s.sd.between(0.0, 1.0)], _s[_s.sd <= -1.5]
+    mo.vstack([
+        mo.md(f"""
+        **Figure 4: the pattern holds at every horizon.** The gap for every combination of distance from the current
+        price and days to expiry (median of the pairs in each cell; empty with fewer than 40 pairs). From the current
+        price to one standard deviation above, Kalshi is higher in {(_centre.gap > 0).sum()} of {len(_centre)} cells;
+        from 1.5 standard deviations below, Deribit is higher in {(_down.gap < 0).sum()} of {len(_down)}. The
+        extremes are with one day left, where the 13-hour adjustment matters most. The Kalshi and Deribit surfaces
+        themselves, and a rotatable 3D view, are in `05`.
+        """),
+        fig4,
+    ])
+    return
+
+
+@app.cell(hide_code=True)
 def _(mo, stats):
     mo.md(f"""
     ## Takeaways

@@ -4,7 +4,7 @@ __generated_with = "0.25.1"
 app = marimo.App(width="medium", app_title="05 Kalshi vs Deribit")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     import numpy as np
@@ -16,7 +16,7 @@ def _():
     return alt, compare, deribit, mo, np, pairs, pd
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     # 05 · Kalshi vs Deribit
@@ -42,7 +42,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(alt):
     # Chart styling: reference palette (slot 1 blue = Kalshi / adjusted, slot 2 orange = Deribit / raw).
     INK, INK2, MUTED, CONTEXT = "#0b0b0b", "#52514e", "#898781", "#c3c2b7"
@@ -70,7 +70,7 @@ def _(alt):
     return H, MUTED, SLOT1, SLOT2, W
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(compare, mo, pairs):
     # Vols: every Deribit trade paired with Kalshi in the same minute (lib/pairs.py, about 90 seconds).
     # Prices: Kalshi snapshots matched to Deribit trades within 15 minutes (lib/compare.py). Both shared with 06.
@@ -83,7 +83,7 @@ def _(compare, mo, pairs):
     return DERIVED, ROOT, deribit_trades, funnel, hour_profile, matched, paired, smiles, snaps, trades
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(funnel, mo, pairs, paired, pd):
     _per_day = paired.groupby("day").size()
     _atm_day = pairs.atm(paired).groupby("day").size().reindex(_per_day.index, fill_value=0)
@@ -131,7 +131,7 @@ def _(funnel, mo, pairs, paired, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ROOT, deribit_trades, mo, pairs, paired, pd):
     # Worked example: a Deribit 58,500 put traded Monday June 29, 2026, 21:44:51 UTC; both contracts expire Fri July 3
     _m, _K = pd.Timestamp("2026-06-29 21:45", tz="UTC"), 58_500.0
@@ -176,7 +176,7 @@ def _(ROOT, deribit_trades, mo, pairs, paired, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, SLOT1, SLOT2, W, alt, compare, deribit, hour_profile, matched, mo, np, pd, smiles):
     # Walk through the 13-hour adjustment on one snapshot (Monday June 29, 20:30 UTC)
     _ts = pd.Timestamp("2026-06-29 20:30", tz="UTC")
@@ -285,7 +285,7 @@ def _(H, SLOT1, SLOT2, W, alt, compare, deribit, hour_profile, matched, mo, np, 
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
     _atm = pairs.atm(paired)
     _head = pd.concat([pairs.gap_table(_atm.assign(all=1), "all", col=c).assign(version=v)
@@ -392,7 +392,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
     _d = (pairs.atm(paired).groupby("day")[["kalshi_iv", "deribit_iv_adj"]].median().reset_index()
           .rename(columns={"kalshi_iv": "Kalshi", "deribit_iv_adj": "Deribit (stretched)"})
@@ -418,7 +418,7 @@ def _(H, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(matched, mo, pairs, paired, pd):
     _old = matched[matched.log_moneyness.abs() < 0.005].dropna(subset=["vol_gap_adj"])
     _new = pairs.atm(paired)
@@ -447,7 +447,7 @@ def _(matched, mo, pairs, paired, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ## 6 · Comparing prices
@@ -461,7 +461,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(DERIVED, compare, mo, np, pd, snaps, trades):
     # Worked example: Monday June 29, 2026, around 20:26 UTC, both contracts expiring Friday July 3
     _snap = snaps[(snaps.ts == pd.Timestamp("2026-06-29 20:30", tz="UTC"))
@@ -508,7 +508,7 @@ def _(DERIVED, compare, mo, np, pd, snaps, trades):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(matched, mo, pd):
     _have = matched.deribit_vol.notna()
     _ba = matched.deribit_digital_adj.notna() & matched.bid.notna() & matched.ask.notna()
@@ -536,7 +536,7 @@ def _(matched, mo, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, matched, mo, pd):
     _x = matched.dropna(subset=["deribit_digital_adj", "deribit_digital_raw", "bid", "ask"]).copy()
     _x["gap_adj"] = 100 * (_x.mid - _x.deribit_digital_adj)
@@ -600,7 +600,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, matched, mo, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(matched, mo, pd):
     _x = matched.dropna(subset=["deribit_digital_direct", "deribit_digital_raw", "deribit_digital_adj", "bid", "ask"])
     _versions = [("Direct: Deribit's own dollar prices, real strikes, no model", "deribit_digital_direct"),
@@ -645,7 +645,7 @@ def _(matched, mo, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(matched, mo):
     _days = sorted(matched.ts.dt.date.unique())
     _opts = {f"{d:%a %Y-%m-%d}": d for d in _days}
@@ -653,7 +653,7 @@ def _(matched, mo):
     return (example_day,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, example_day, matched, mo, np, pd, smiles):
     _day = matched[matched.ts.dt.date == example_day.value]
     _ts = _day.ts.iloc[((_day.ts.dt.hour * 60 + _day.ts.dt.minute) - (20 * 60 + 30)).abs().argmin()]
@@ -688,7 +688,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, example_day, matched, mo, np, pd,
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(compare, matched, mo, np, pd):
     _y = matched.dropna(subset=["deribit_digital_adj", "bid", "ask"]).copy()
     # Sell Kalshi at the bid and buy Deribit's spread, or buy Kalshi at the ask and sell Deribit's spread.
@@ -739,7 +739,7 @@ def _(compare, matched, mo, np, pd):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(compare, matched, mo, np, pairs, paired):
     _a = pairs.atm(paired)
     _t = pairs.gap_table(_a.assign(all=1), "all").iloc[0]

@@ -4,7 +4,7 @@ __generated_with = "0.25.1"
 app = marimo.App(width="medium", app_title="06 Results summary")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     import numpy as np
@@ -16,7 +16,7 @@ def _():
     return alt, compare, mo, np, pairs, pd
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(alt):
     # Chart styling: reference palette (slot 1 blue = Kalshi / stretched, slot 2 orange = Deribit / not stretched).
     INK, INK2, MUTED, CONTEXT = "#0b0b0b", "#52514e", "#898781", "#c3c2b7"
@@ -44,7 +44,7 @@ def _(alt):
     return H, MUTED, SLOT1, SLOT2, W
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(compare, mo, np, pairs, pd):
     ROOT = mo.notebook_dir()
     # vols: Deribit trades paired with Kalshi in the same minute; prices: Kalshi snapshots with Deribit within 15 min
@@ -83,7 +83,7 @@ def _(compare, mo, np, pairs, pd):
     return daily, kalshi_snaps, matched, paired, smiles, stats
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, stats):
     mo.md(f"""
     # Kalshi vs Deribit: do Bitcoin prediction-market prices agree with options?
@@ -118,7 +118,7 @@ def _(mo, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, pd, stats, kalshi_snaps):
     _data = pd.DataFrame([
         ("Kalshi", "Weekly BTC contracts (KXBTCD): '$1 if BTC > K at 5pm ET Friday'",
@@ -136,7 +136,7 @@ def _(mo, pd, stats, kalshi_snaps):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, stats):
     mo.md(f"""
     ## Method
@@ -170,7 +170,7 @@ def _(mo, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, matched, mo, np, pd, smiles):
     _ts = pd.Timestamp("2026-06-29 20:30", tz="UTC")
     _k = matched[(matched.ts == _ts) & matched.mid.between(0.02, 0.98)]
@@ -217,7 +217,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, matched, mo, np, pd, smiles):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, SLOT1, SLOT2, W, alt, daily, mo, stats):
     _long = daily.melt(id_vars=["day"], value_vars=["kalshi_atm", "deribit_atm_adj"], var_name="market", value_name="vol")
     _long["market"] = _long.market.map({"kalshi_atm": "Kalshi", "deribit_atm_adj": "Deribit (stretched)"})
@@ -244,7 +244,7 @@ def _(H, SLOT1, SLOT2, W, alt, daily, mo, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd, stats):
     _t = pd.concat([pairs.gap_table(paired, "sd_bucket", col=c).assign(version=v)
                     for c, v in [("gap_raw", "Deribit at its own expiry"), ("gap_adj", "Deribit stretched to Kalshi's expiry")]])
@@ -273,7 +273,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, mo, pairs, paired, pd, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, matched, mo, pd, stats):
     _x = matched.dropna(subset=["deribit_digital_adj", "deribit_digital_raw", "bid", "ask"])
     _by = (_x.assign(raw=100 * (_x.mid - _x.deribit_digital_raw), adj=100 * (_x.mid - _x.deribit_digital_adj))
@@ -318,7 +318,7 @@ def _(H, MUTED, SLOT1, SLOT2, W, alt, compare, matched, mo, pd, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(compare, matched, mo, np, pd, stats):
     _p = matched.dropna(subset=["deribit_digital_adj", "bid", "ask"])
     _edge = 100 * np.maximum(_p.bid - compare.kalshi_fee(_p.bid) - _p.deribit_digital_adj,
@@ -340,7 +340,7 @@ def _(compare, matched, mo, np, pd, stats):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, stats):
     mo.md(f"""
     ## Takeaways

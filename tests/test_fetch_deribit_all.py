@@ -2,7 +2,7 @@ import importlib
 
 import pandas as pd
 
-fetch = importlib.import_module("00_fetch_deribit")
+fetch = importlib.import_module("00_fetch_deribit_all")
 
 
 def test_api_rows_become_the_collaborators_columns():

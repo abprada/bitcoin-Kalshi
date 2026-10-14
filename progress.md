@@ -1,6 +1,6 @@
 # Progress
 
-*As of 2026-10-11*
+*As of 2026-10-12*
 
 ## The idea in one paragraph
 
@@ -31,12 +31,20 @@ Run the numbered scripts in order. Each one reads the previous one's output.
 | 0 | `00_fetch_data.py` | Downloads Kalshi's weekly Bitcoin contracts: minute-by-minute bid and ask for every strike, and how each one settled | `data/raw/` |
 | 0 | `00_fetch_spot.py` | Downloads Bitcoin's price every minute from Coinbase and Bitstamp | `data/raw/` |
 | 0 | `00_fetch_brti.py` | Downloads the index Kalshi uses to settle the contracts (BRTI) | `data/raw/` |
+| 0 | `00_fetch_deribit.py` | Downloads every Deribit BTC option trade (expiries up to 15 days), the BTC perpetual every minute, and funding (about 50 minutes) | `data/raw/deribit/` |
 | 1 | `01_data_exploration.py` | Notebook that checks the data: gaps, odd prices, missing values | charts only |
 | 2 | `02_clean_data.py` | Applies the cleaning rules below and saves a clean dataset (about 25 seconds) | `data/clean/` |
 | 3 | `03_iv_surface.py` | Turns the clean prices into implied volatilities and draws the surface (about 2 minutes) | `data/derived/`, `outputs/` |
 | 4 | `04_deribit_exploration.py` | Notebook that explains and checks the Deribit data, with a first daily comparison | charts only |
 | 5 | `05_kalshi_vs_deribit.py` | Compares Kalshi's and Deribit's implied volatilities, trade by trade (about 2 minutes) | charts only |
 | 6 | `06_results_summary.py` | **Short summary of the results for the supervisors**: question, answer, method, four figures | charts only |
+| 8 | `08_strategy_data.py` | Builds the inputs of the two trading backtests and runs them (about 20 minutes) | `data/derived/strategies/` |
+| 9 | `09_vol_spread.py` | Strategy 1: Kalshi vs Deribit vol, hour by hour; who leads; a long/short trade on the gap | `outputs/figures/09_*` |
+| 10 | `10_calendar_straddle.py` | Strategy 2: long the 7-day Deribit straddle, short the 1-day one, delta-hedged | `outputs/figures/10_*` |
+| 0 | `00_fetch_kalshi_event.py` | Downloads 1-minute quotes for any named Kalshi event (e.g. the 9 Oct 2025 daily) | `data/raw/kalshi_events/` |
+| 12 | `12_strategies_ab.py` | The two dislocation strategies (A, B) as portfolios: execution variants, robustness, out of sample, and the dislocation as a signal | `outputs/figures/12_*` |
+| 13 | `13_binary_hedging.py` | Hedging a long Kalshi binary with a short call spread: Greeks through 9 Oct 2025, P&L with half-hourly hedges, and every 2026 daily | `outputs/figures/13_*` |
+| 11 | `11_dislocations.py` | Large Kalshi-vs-Deribit dislocations: who adjusts, mean-reversion trades, and which market predicts BTC better | `outputs/figures/11_*` |
 
 Other folders:
 - `lib/`: the shared code (downloading, cleaning rules, volatility maths, Deribit loading, the Kalshi–Deribit comparison in `pairs.py`; `compare.py` holds the earlier snapshot method and the call-spread prices, no longer shown in the notebooks).
@@ -123,6 +131,16 @@ Every 15 minutes we take the current ladder of contract prices and do the follow
 - `figures/forward_basis.png`, `figures/clean_by_ttm.png`: quality checks
 - 3D surfaces you can rotate in a browser: `iv_surface_3d.html` (full week), `iv_surface_3d_1d7d.html` (1–7 days), `iv_surface_3d_1d.html` (last 24 hours)
 
+Kalshi vs Deribit (written by running `python 05_kalshi_vs_deribit.py` and `python 06_results_summary.py`):
+- `figures/05_13h_hour_profile.png`: how much Bitcoin usually moves each hour up to Kalshi's expiry, with the 13 extra hours
+- `figures/05_vol_gap_across_smile.png`, `figures/05_smile_shape.png`: the gap across the smile and the two average smile shapes
+- `figures/05_daily_atm_vol.png`: volatility at today's price, day by day, both markets
+- `figures/05_iv_surfaces.png`, `figures/05_gap_surface.png`: the two surfaces and their gap, by days to expiry and distance from today's price
+- `figures/05_far_from_expiry_gap.png`: the gap across the smile with 4–7 days left, with and without the 13-hour adjustment
+- `figures/06_fig1_daily_atm_vol.png` to `figures/06_fig4_gap_surface.png`: the four figures of the results summary
+- `05_iv_surfaces_3d.html`: both surfaces in 3D
+- `figures/smile_in_sd.png`, `figures/trades_A_one_afternoon.png` to `trades_D_per_day.png`: the average smile from the pairs, and when Deribit trades compared with Kalshi (one-off figures, not written by a notebook)
+
 ## Deribit (`04`)
 
 The collaborator's file has **205,896 Deribit option trades** from January 15 to September 30, 2026 (259 days).
@@ -156,6 +174,86 @@ This gives **15,142 pairs on 251 days** (37 weeklies), a median of 44 per aftern
 - **Far from expiry (4–7 days left, 5,789 pairs on 144 days),** the 13 hours are about 11% of the horizon and the adjustment only ×1.02–1.03. There Kalshi is **+1.8 points** above Deribit at today's price with no adjustment (95% interval 1.3 to 2.2) and **+0.7** with it (0.3 to 1.2): higher either way. Deribit's steeper downside holds even with no adjustment (−2.9 points two standard deviations below). Across three assumptions about how busy the extra hours are, the result a week out moves by 2.6 points, against 8.8 one to two days out, so this is the comparison that least depends on the adjustment.
 - **Answer to 2b so far:** in implied volatility the two markets broadly agree once compared at the same moment and the 13-hour difference is handled. Kalshi is a little richer at today's price and flatter in the wings. Possible reasons: different users (Deribit does not serve US residents), Kalshi's full collateral and fees, its 1¢ tick and $500 strikes.
 
+## Two trading strategies (`08`, `09`, `10`)
+
+**New data.** The collaborator's Deribit file only has two windows a day, so it never follows an option through
+the day. `00_fetch_deribit.py` downloads every Deribit BTC option trade from Deribit's public history: 2.7 million
+trades, October 2025 to September 2026, about 13 times the collaborator's file. Every one of the collaborator's
+trades (in these expiries) is in it with the same mark and vol. Every trade carries Deribit's mark, so the trades in
+one expiry over an hour trace Deribit's smile, and any option can be valued at any hour (`lib/deribit_marks.py`).
+Deribit's bid-ask spread is measured as the gap between what takers paid and the mark: about $5–8 per
+at-the-money option. The collaborator's hourly Kalshi file is now turned into vols too, dailies included
+(`lib/kalshi_hourly.py`, same method as `03`). The 13-hour gap is handled with Deribit's own prices when Deribit
+has an expiry on each side of Kalshi's (41% of hours: "Next 1" below), otherwise with `05`'s stretch.
+
+**Strategy 1: Kalshi vs Deribit vol (`09`).**
+- Kalshi is richer than Deribit at the same expiry: about +1 vol point with 4–7 days left, +2.5–3 with 1–4 days,
+  +3–4 for the 24-hour dailies, more in the last hours. This reproduces `05` (+1.9 in its afternoon window) and the
+  growth toward expiry also appears where Deribit prices both sides of Kalshi's expiry, so it is not the stretch.
+- Kalshi does jump higher when vol jumps: it follows Deribit's vol up about twice as strongly as down, and after a
+  vol spike the gap widens and stays wide for a day.
+- Neither market leads by 15 minutes or more; hour by hour they move together. When they drift apart, Kalshi does
+  most of the moving back.
+- Kalshi's extra vol is partly right: BTC then moves more than Deribit expected.
+- The trade loses after costs in every version (1, 4, 24 hours, to expiry; thresholds; two signals). A Kalshi
+  straddle is a strip of 15–30 binaries; crossing their spreads and paying Kalshi's fee costs about 15–19 vol points
+  round trip, against gaps of 1–4. Trading only Deribit on Kalshi's signal costs 2–4 points and earns under 1.
+
+**Strategy 2: Deribit calendar straddle (`10`).**
+- The "first check" fails: Deribit's daily options carry no short-dated premium. Their vol falls into expiry
+  (about 37% with 1–4 days left, 33% in the last 12 hours, which are the quiet night before 08:00 UTC) and is at or
+  below what BTC then realizes. Kalshi's rises into its 5pm ET expiry.
+- The base case loses about $70 a day before costs and $700 after (Sharpe −1.6 and −16; costs: option fees and
+  spreads about $370 a day, hourly hedging about $270). Deribit's fee, 0.03% of BTC per option, is about 4% of a
+  daily option's price each way.
+- None of 23 variations makes money after costs. The only clear gross profit is selling the overnight daily (enter
+  20:00 UTC, hold to 08:00): about +$80–100 a day before costs, also in Oct–Dec 2025, but fees take all of it.
+- Jump weeks (early February, early June, late August) and intraday whipsaws are where the short gamma loses.
+
+## Corrections and dislocations (`11`)
+
+**Corrections (from review).**
+- *The near-expiry vol spike is mostly a filter.* 05's rule (at least 2 strikes per standard deviation) passes
+  near expiry only when vol is high: on the hourly data, weekly snapshots with 0–3 hours left show 96% median ATM
+  vol if filtered, 58% if not. `08`–`11` now use every snapshot and keep the rule as a flag (`fine_grid`).
+  **03's term structure (the 88% spike), its clean flag and the dark near-expiry rows of its heatmap, and the
+  "about 60% in the last 12 hours" line above, still need the same fix.** Unfiltered, Kalshi's dailies still
+  price their last 6 hours richly (49% against 44% realized).
+- *Kalshi's premium shrinks through the year:* median daily gap to Deribit about 7 points in Q1 2026, 2.5 in Q2–Q3.
+- *Deribit's short end has a weekend effect:* Saturday and Sunday dailies trade at about 29% and 23% vol against
+  35–37% on weekdays. `10` now uses Tuesday–Friday expiries for the term structure and shows the P&L by weekday
+  (weekday-only, the calendar still loses about $140 a day before costs).
+
+**Dislocations** = the gap minus its normal (median over the previous 30 days, same contract type and time to
+expiry).
+- Kalshi unusually *cheap* vs Deribit: Deribit spiked and Kalshi did not follow; Deribit falls back (about 4 points
+  in a day) and had overpriced BTC's later moves. Kalshi unusually *rich*: the gap barely closes, and Deribit had
+  underpriced BTC's later moves (weeklies).
+- Kalshi's dislocation predicts Deribit's later error (t = −2.8, clustered by week); Deribit's own vol spike does
+  not (after Deribit's biggest jumps BTC keeps moving, unless Kalshi stayed calm).
+- Trades: selling Deribit's straddle on large Kalshi-cheap dislocations (≥ 6 points), held to expiry, earns about
+  +6 vol points per trade after taker costs, but on 12 weeks only. Selling Kalshi's rich dailies earns about +6
+  only as a maker and has faded to about zero by Q3. Nothing with short holds survives.
+- Predicting BTC: Deribit's probabilities score marginally better than Kalshi's (Brier 0.1013 vs 0.1018); Kalshi
+  overprices big up-moves (longshot bias, question 1); neither predicts direction; Deribit forecasts realized vol
+  better, Kalshi's dislocation adds to it.
+
+## Strategies A and B, and hedging a binary (`12`, `13`)
+
+- **A** (sell Deribit's weekly straddle when Kalshi is ≥ 6 vol points cheaper than its normal gap, hold to
+  expiry): +6 vol points per trade after taker costs, +11 as a maker (Sharpe about 2 and 3), but 12 positions,
+  nearly all February–April; after April the signal fired 3 times. Thresholds below 6 lose in every window.
+- **B** (sell Kalshi's daily strip when it is ≥ 3 points richer than normal): +6 vol points per trade if sold at
+  mid as a maker, negative if it crosses the spread; positive in every quarter as a maker, shrinking.
+- **What holds up is the signal:** sorted by dislocation, Deribit's vol error against realized falls from about +2
+  points (Kalshi cheapest) to −5 (Kalshi richest), in both halves of the year.
+- **Hedging a long Kalshi binary** (professor's question): the short call spread is a static hedge; delta-hedging
+  the binary alone fails near expiry (gamma ~ 1 / time left; ±$500k error on $1M across 2026 dailies). On 9 Oct
+  2025, $1M of the $123,000 strike (Kalshi 1.4¢ cheap) hedged with the $500 spread returns about the edge
+  (+$24k); the binary alone, delta-hedged half-hourly, about −$27k after falling to −$120k, with hedges up to
+  1,200 BTC on the pin strike. What is left is pin risk; across 2026 the best hedge is the static spread unwound an
+  hour before expiry (error ±$72k vs ±$237k held to expiry and ±$500k for the delta-hedged binary).
+
 ## Known limits
 
 - In the last 6 hours the $500 strike spacing is too coarse compared with how little Bitcoin can still move, so those volatilities are rough.
@@ -167,7 +265,11 @@ This gives **15,142 pairs on 251 days** (37 weeklies), a median of 44 per aftern
 
 ## Next
 
-1. Handle the 13-hour gap with market prices instead of history: interpolate between Deribit's Friday 08:00 and Saturday 08:00 UTC expiries, which bracket Kalshi's 5pm ET.
+0. The strategies: Kalshi as a *maker* (posting the strip instead of crossing spreads) is the one untested change
+   that could make strategy 1 pay; Kalshi's 1-minute quotes (`00_fetch_data.py`, `02`) would push the lead-lag test
+   below 15 minutes.
+
+1. Handle the 13-hour gap with market prices instead of history: interpolate between Deribit's Friday 08:00 and Saturday 08:00 UTC expiries, which bracket Kalshi's 5pm ET. *Done hourly in `08`/`09` (`vol_spread.deribit_at_kalshi`); not yet applied to `05`'s trade-by-trade pairs.*
 2. Robustness of `05`: matching window length, trade prices instead of marks, the morning window.
 3. Get Deribit option-chain quotes (bid, ask and mark for every option, e.g. Tardis.dev): a full Deribit smile every minute for the comparison.
 4. Handout question 1: write up the theory (Kalshi contract logistics, Black-Scholes value N(d₂), the call-spread link).

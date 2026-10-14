@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.25.1"
-app = marimo.App(width="medium", app_title="08 Backtests: Kalshi and Deribit vol trades")
+app = marimo.App(width="medium", app_title="14 Backtests: Kalshi and Deribit vol trades")
 
 
 @app.cell(hide_code=True)
@@ -19,7 +19,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # 08 · Backtests
+    # 14 · Backtests
 
     Every trade is held to expiry, one per contract and entry rule (the Deribit file has two windows a day, so
     intraday holds cannot be marked). Code in `lib/backtest.py`; P&L in **basis points of spot per 1 BTC of
@@ -43,7 +43,7 @@ def _(ROOT, backtest, deribit, pd, term):
     hour_profile = deribit.hourly_variance(spot)
     snaps = term.kalshi_weekly_atm(pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet"), usable_only=False)
     daily_atm = term.kalshi_daily_atm(ROOT, usable_only=False)
-    # every Deribit BTC option trade (00_fetch_deribit.py) if fetched, else the collaborator's two-window file
+    # every Deribit BTC option trade (00_fetch_deribit_all.py) if fetched, else the collaborator's two-window file
     _full = ROOT / "data" / "raw" / "deribit_trades" / "btc_options_trades.parquet"
     deribit_trades = deribit.load_trades(_full if _full.exists() else ROOT / "data" / "deribit_btc_options.csv.gz")
     # ATM vols per expiry, day and window: only the collaborator's two windows, so 1-4 and 6 compare like for like

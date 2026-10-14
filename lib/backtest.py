@@ -1,5 +1,5 @@
 """Backtests of the vol trades: Kalshi binary strips, Deribit straddles, and Kalshi-Deribit dislocations
-(used by 08_backtest.py).
+(used by 14_backtests.py).
 
 Every trade is held to expiry (the Deribit file only has two trading windows a day, 07:00 and 19:00-22:59 UTC, so
 intraday holds cannot be marked) except the long weekly leg of the calendar, which is sold back at the daily's expiry.

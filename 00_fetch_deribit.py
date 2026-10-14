@@ -1,97 +1,151 @@
-"""Fetch every Deribit BTC option trade from Deribit's public history API (no key needed).
+"""Fetch Deribit BTC option trades for the whole day, plus BTC-PERPETUAL 1-minute bars and funding.
 
-The collaborator's file (data/deribit_btc_options.csv.gz) has only 07:00-08:00 and 19:30-22:30 UTC and expiries up
-to about 8 days; checked against this API on 2026-03-10 it holds every trade inside that filter and about 2% of the
-day's volume. This script fetches the whole day, every expiry. Each trade comes with Deribit's mark price, index and
-implied vol at that instant, so it serves as a time series of marks as well as of trades. No bid/ask: the API keeps
-no historical order book.
+The collaborator's file (data/deribit_btc_options.csv.gz) keeps only two windows a day (07:00-08:00 and
+19:30-22:29 UTC) and a few expiries, so it never follows an option through the day. This pulls every BTC option
+trade from Deribit's public history API (history.deribit.com keeps expired instruments), with the same fields
+(price, mark price, mark iv, index, amount, taker side), so a short-dated option can be valued at any hour.
+Public endpoints only, no API key needed.
 
-Output (data/raw/deribit_trades/):
-  {YYYY-MM-DD}.parquet           one file per UTC day, raw API fields (the resume unit)
-  btc_options_trades.parquet     combined, in the collaborator's columns (read by `deribit.load_trades`), plus
-                                 trade_id, block_trade_id and `window`: "exact_0800UTC" (07:00-08:00),
-                                 "us_afternoon" (19:30-22:30, as in the collaborator's file) or "other"
+Output (data/raw/deribit/):
+  options/{first_day}_{last_day}.parquet   one file per month (the resume unit): every BTC option trade whose
+                                           expiry is at most MAX_TTE_DAYS after the trade
+  perp/{first_day}_{last_day}.parquet      BTC-PERPETUAL 1-minute OHLCV (ts = minute END, UTC, like the spot file)
+  funding.parquet                          BTC-PERPETUAL hourly funding (interest_1h, interest_8h)
+  options.parquet, perp.parquet            combined
 
-Resumable: days already on disk are skipped.
-  python 00_fetch_deribit.py                          # 2026-01-15 .. 2026-09-30, the collaborator's span
-  python 00_fetch_deribit.py --start 2026-03-10 --end 2026-03-10
+Resumable: months already on disk are skipped.
+  python 00_fetch_deribit.py                 # 2025-10-01 .. 2026-09-30
 """
 
 import argparse
-from datetime import date, timedelta
+import re
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from lib.fetch_utils import Client, write_parquet
+from lib.fetch_utils import Client, month_windows, write_parquet
 
-OUT_DIR = Path(__file__).resolve().parent / "data" / "raw" / "deribit_trades"
-BASE_URL = "https://history.deribit.com/api/v2"
-PAGE = 1000
+HISTORY_URL = "https://history.deribit.com/api/v2/public"
+LIVE_URL = "https://www.deribit.com/api/v2/public"
+OUT_DIR = Path(__file__).resolve().parent / "data" / "raw" / "deribit"
+MAX_TTE_DAYS = 15          # options expiring later than this after the trade are dropped (not needed here)
+PAGE = 1000                # trades per request (API maximum)
+PERP_SPAN_MIN = 4999       # 1-minute bars per chart request (API returns at most ~5000)
+FUNDING_SPAN_DAYS = 30     # funding history returns at most 744 hourly rows per request
+
+_INSTRUMENT_RE = re.compile(r"^BTC-(\d{1,2}[A-Z]{3}\d{2})-(\d+)-([CP])$")
+TRADE_COLS = ["ts", "trade_id", "instrument", "expiry", "strike", "cp", "price_btc", "mark_price_btc", "iv",
+              "index_price", "amount", "direction"]
 
 
-def fetch_day(client: Client, day: date) -> pd.DataFrame:
-    """All BTC option trades with a timestamp in [day 00:00, day + 1 00:00) UTC.
+def parse_instrument(name: str) -> tuple[pd.Timestamp, float, str] | None:
+    """BTC-27MAR26-114000-C -> (2026-03-27 08:00 UTC, 114000.0, "C"); None for anything else (combos, other)."""
+    m = _INSTRUMENT_RE.match(name)
+    if not m:
+        return None
+    expiry = datetime.strptime(m.group(1), "%d%b%y").replace(hour=8, tzinfo=timezone.utc)
+    return pd.Timestamp(expiry), float(m.group(2)), m.group(3)
 
-    Pages forward in time from the last timestamp seen (not one past it, so trades sharing the boundary millisecond
-    are not skipped) and drops repeats by trade_id.
+
+def trade_rows(trades: list[dict]) -> list[dict]:
+    """Flatten history trades; keep plain BTC options. Every Deribit option expires at 08:00 UTC."""
+    out = []
+    for t in trades:
+        p = parse_instrument(t["instrument_name"])
+        if p is None:
+            continue
+        out.append({"ts": t["timestamp"], "trade_id": t["trade_id"], "instrument": t["instrument_name"],
+                    "expiry": p[0], "strike": p[1], "cp": p[2], "price_btc": t["price"],
+                    "mark_price_btc": t["mark_price"], "iv": t.get("iv"), "index_price": t["index_price"],
+                    "amount": t["amount"], "direction": t["direction"]})
+    return out
+
+
+def fetch_options(client: Client, start_ts: int, end_ts: int) -> pd.DataFrame:
+    """All BTC option trades with start_ts <= timestamp <= end_ts (seconds), paging forward in time.
+
+    Pages restart at the last timestamp seen (not one past it), so fills sharing a millisecond across a page
+    boundary are not lost; repeats are dropped by trade id.
     """
-    start = int(pd.Timestamp(day, tz="UTC").timestamp() * 1000)
-    end = start + 86_400_000 - 1
-    rows, t0 = [], start
+    rows, st, end_ms = [], start_ts * 1000, end_ts * 1000 + 59_999
     while True:
-        r = client.get("/public/get_last_trades_by_currency_and_time", currency="BTC", kind="option",
-                       start_timestamp=t0, end_timestamp=end, count=PAGE, sorting="asc")["result"]
-        trades = r["trades"]
-        rows += trades
-        if not r.get("has_more") or not trades:
+        r = client.get("/get_last_trades_by_currency_and_time", currency="BTC", kind="option",
+                       start_timestamp=st, end_timestamp=end_ms, count=PAGE, sorting="asc")["result"]
+        tr = r["trades"]
+        rows += trade_rows(tr)
+        if not r["has_more"] or not tr:
             break
-        last = trades[-1]["timestamp"]
-        t0 = last if last > t0 else t0 + 1      # a full page within one millisecond: step past it
-    d = pd.DataFrame(rows)
-    return d.drop_duplicates("trade_id").reset_index(drop=True) if len(d) else d
+        nxt = tr[-1]["timestamp"]
+        st = nxt if nxt > st else nxt + 1     # a full page inside one millisecond: step past it
+    df = pd.DataFrame(rows, columns=TRADE_COLS).drop_duplicates("trade_id")
+    df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+    df["expiry"] = pd.to_datetime(df["expiry"], utc=True)
+    return df[(df.expiry - df.ts) <= pd.Timedelta(days=MAX_TTE_DAYS)].sort_values("ts").reset_index(drop=True)
 
 
-def window_of(ts: pd.Series) -> np.ndarray:
-    m = ts.dt.hour * 60 + ts.dt.minute
-    return np.select([ts.dt.hour == 7, (m >= 19 * 60 + 30) & (m < 22 * 60 + 30)],
-                     ["exact_0800UTC", "us_afternoon"], "other")
+def fetch_perp(client: Client, start_ts: int, end_ts: int) -> pd.DataFrame:
+    """BTC-PERPETUAL 1-minute OHLCV; `ts` is the minute end, as in 00_fetch_spot.py."""
+    frames, s = [], start_ts
+    while s <= end_ts:
+        e = min(s + PERP_SPAN_MIN * 60, end_ts)
+        r = client.get("/get_tradingview_chart_data", instrument_name="BTC-PERPETUAL", resolution="1",
+                       start_timestamp=s * 1000, end_timestamp=e * 1000)["result"]
+        if r["ticks"]:
+            frames.append(pd.DataFrame({"ts": r["ticks"], "open": r["open"], "high": r["high"], "low": r["low"],
+                                        "close": r["close"], "volume": r["volume"]}))
+        s = e + 60
+    df = pd.concat(frames, ignore_index=True).drop_duplicates("ts")
+    df = df[(df.ts >= start_ts * 1000) & (df.ts <= end_ts * 1000)]
+    df["ts"] = pd.to_datetime(df.ts + 60_000, unit="ms", utc=True)
+    return df.sort_values("ts").reset_index(drop=True)
 
 
-def to_collaborator_columns(raw: pd.DataFrame) -> pd.DataFrame:
-    """API fields -> the collaborator's columns, so `deribit.load_trades` reads either file."""
-    ts = pd.to_datetime(raw.timestamp, unit="ms", utc=True)
-    parts = raw.instrument_name.str.split("-", expand=True)            # BTC-13MAR26-70000-C
-    expiry = pd.to_datetime(parts[1], format="%d%b%y").dt.tz_localize("UTC") + pd.Timedelta(hours=8)
-    return pd.DataFrame({
-        "window": window_of(ts), "date": ts.dt.strftime("%Y-%m-%d"), "instrument": raw.instrument_name,
-        "expiry_utc": expiry.dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"), "strike": parts[2].astype(float), "cp": parts[3],
-        "time_utc": ts.dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00"), "price_btc": raw.price,
-        "index_price": raw.index_price, "price_usd": raw.price * raw.index_price, "amount": raw.amount,
-        "direction": raw.direction, "iv": raw.iv, "mark_price_btc": raw.mark_price, "trade_id": raw.trade_id,
-        "block_trade_id": raw.get("block_trade_id", pd.Series(pd.NA, index=raw.index)),
-    })
+def fetch_funding(client: Client, start_ts: int, end_ts: int) -> pd.DataFrame:
+    rows, s = [], start_ts
+    while s < end_ts:
+        e = min(s + FUNDING_SPAN_DAYS * 86_400, end_ts)
+        rows += client.get("/get_funding_rate_history", instrument_name="BTC-PERPETUAL",
+                           start_timestamp=s * 1000, end_timestamp=e * 1000)["result"]
+        s = e
+    df = pd.DataFrame(rows).drop_duplicates("timestamp")
+    df["ts"] = pd.to_datetime(df.pop("timestamp"), unit="ms", utc=True)
+    return df.sort_values("ts").reset_index(drop=True)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--start", type=date.fromisoformat, default=date(2026, 1, 15))
-    ap.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 30))
-    args = ap.parse_args()
-    client = Client(BASE_URL, min_interval=0.15)
-    day = args.start
-    while day <= args.end:
-        path = OUT_DIR / f"{day:%Y-%m-%d}.parquet"
-        if not path.exists():
-            d = fetch_day(client, day)
-            write_parquet(d, path)
-            print(f"{day}  {len(d):6d} trades  ({client.n_requests} requests so far)", flush=True)
-        day += timedelta(days=1)
-    files = sorted(p for p in OUT_DIR.glob("????-??-??.parquet"))
-    full = pd.concat([to_collaborator_columns(pd.read_parquet(p)) for p in files], ignore_index=True)
-    write_parquet(full, OUT_DIR / "btc_options_trades.parquet")
-    print(f"combined: {len(full):,} trades, {full.date.nunique()} days -> {OUT_DIR / 'btc_options_trades.parquet'}")
+def combine(out: Path) -> None:
+    for kind in ("options", "perp"):
+        files = sorted((out / kind).glob("*.parquet"))
+        if files:
+            pd.concat(map(pd.read_parquet, files), ignore_index=True).to_parquet(out / f"{kind}.parquet", index=False)
+
+
+def main(argv=None) -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--start", type=date.fromisoformat, default=date(2025, 10, 1), help="first UTC day")
+    p.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 30), help="last UTC day")
+    p.add_argument("--out", type=Path, default=OUT_DIR)
+    a = p.parse_args(argv)
+    if a.end >= datetime.now(timezone.utc).date():
+        p.error("--end must be before today (UTC): an incomplete window would be cached as done")
+
+    hist, live = Client(HISTORY_URL, min_interval=0.1), Client(LIVE_URL, min_interval=0.1)
+    day = lambda ts: datetime.fromtimestamp(ts, timezone.utc).date()
+    for label, s, e in month_windows(a.start, a.end):
+        for kind, client, fetch in (("perp", live, fetch_perp), ("options", hist, fetch_options)):
+            path = a.out / kind / f"{day(s)}_{day(e)}.parquet"
+            if path.exists():
+                continue
+            t0, n0 = time.monotonic(), client.n_requests
+            df = fetch(client, s, e)
+            print(f"{kind} {label}: {len(df):,} rows  [{client.n_requests - n0} req, {time.monotonic() - t0:.0f}s]",
+                  flush=True)
+            write_parquet(df, path)
+    s0, e0 = month_windows(a.start, a.end)[0][1], month_windows(a.start, a.end)[-1][2]
+    write_parquet(fetch_funding(live, s0, e0 + 60), a.out / "funding.parquet")
+    combine(a.out)
+    print(f"done -> {a.out}")
 
 
 if __name__ == "__main__":

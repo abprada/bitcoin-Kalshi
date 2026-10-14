@@ -19,7 +19,7 @@ ATM_BAND = 0.01               # |ln(K / index)| below this counts as at the mone
 
 
 def load_trades(path: Path) -> pd.DataFrame:
-    """Read the trades (the collaborator's CSV, or 00_fetch_deribit.py's parquet with every trade) and add time to
+    """Read the trades (the collaborator's CSV, or 00_fetch_deribit_all.py's parquet with every trade) and add time to
     expiry, moneyness, decimal vols and flags.
 
     Added columns: `ts`, `expiry` (UTC), `tau_years`, `log_moneyness` = ln(K / index), `iv_deribit` (decimal,

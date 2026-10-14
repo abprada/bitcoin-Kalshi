@@ -167,27 +167,7 @@ def _(
     for _ev, _m in markets.groupby("event_ticker"):
         _cdl = pd.read_parquet(KALSHI_DIR / "candles" / f"{_ev}.parquet",
                                columns=["market_ticker", "ts", "bid_close", "ask_close", "volume", "open_interest"])
-        _g = cl.build_event_grid(_cdl, _m)                                      # R4
-        _bid, _ask = cl.quote_sides(_g.bid_raw.to_numpy(), _g.ask_raw.to_numpy())  # R5
-        _spread, _mid = cl.mid_and_spread(_bid, _ask)                           # R6
-        _open = cl.exchange_open(_g.ts)                                         # R7
-        _s = _spot.reindex(_g.ts).to_numpy()
-        _q = pd.DataFrame({
-            # plain strings (parquet dictionary-encodes them): per-file categoricals cannot be read as one folder
-            "event_ticker": _ev,
-            "market_ticker": _g.market_ticker.astype(str),
-            "strike": _g.strike.astype("float32"),
-            "ts": _g.ts,
-            "tau_years": cl.tau_years(_g.ts, _m.close_time.max()).astype("float32"),
-            "bid": _bid.astype("float32"), "ask": _ask.astype("float32"),
-            "spread": _spread.astype("float32"), "mid": _mid.astype("float32"),
-            "quote_age_min": _g.quote_age_min,
-            "exchange_open": _open,
-            "usable": ~np.isnan(_mid) & _open,                                  # R8
-            "volume": _g.volume, "open_interest": _g.open_interest,
-            "spot": _s, "spot_stale": _stale.reindex(_g.ts).to_numpy(),
-            "log_moneyness": np.log(_g.strike.to_numpy() / _s).astype("float32"),
-        })
+        _q = cl.event_quotes(_cdl, _m, _spot, _stale)                           # R4-R8
         if WRITE:
             write_parquet(_q, CLEAN / "kalshi_weekly_quotes" / f"{_ev}.parquet")
 
@@ -204,7 +184,7 @@ def _(
             "rows ≠ first candle → expiry": len(_q) - _expected_rows,
             "candle minutes whose carried quote ≠ raw close": int((~np.isclose(np.nan_to_num(_at.bid, nan=0.0), _at.bid_close)
                                                                    | ~np.isclose(np.nan_to_num(_at.ask, nan=1.0), _at.ask_close)).sum()),
-            "rows without spot": int(np.isnan(_s).sum()),
+            "rows without spot": int(_q.spot.isna().sum()),
             "mids with spread > 20¢": int((_q.mid.notna() & (_q.spread > 0.2001)).sum()),
             "negative time to expiry": int((_q.tau_years < 0).sum()),
         })

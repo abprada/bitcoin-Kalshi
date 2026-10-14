@@ -2,9 +2,10 @@
 
 KXBTCD events expiring Friday 5pm ET open the previous Friday 4pm ET and live 169h; every
 strike is "BTC (CF Benchmarks BRTI, 60s average) above K at expiry". Other days' 5pm events
-are 25h dailies and are skipped. Public endpoints only, no API key needed.
+are 25h dailies and are skipped, unless `--product daily`, which fetches the Monday-Thursday
+5pm ET dailies instead (the short-dated leg next to the weekly). Public endpoints only, no API key needed.
 
-Output (data/raw/kalshi_btc_weekly/):
+Output (data/raw/kalshi_btc_weekly/, or data/raw/kalshi_btc_daily/ with --product daily):
   candles/{event}.parquet     one row per strike-minute: YES bid/ask OHLC, volume, open interest
   markets/{event}.parquet     strike ladder: strike, open/close time, how it resolved (result,
                               expiration_value = settlement index, settlement_value, settlement_ts)
@@ -18,6 +19,7 @@ expiration_value > floor_strike); mismatches are printed and flagged in resoluti
 Resumable: events whose candles file exists are skipped.
   python 00_fetch_data.py                      # 2025-10-01 .. 2026-10-01
   python 00_fetch_data.py --limit 2            # smoke test
+  python 00_fetch_data.py --product daily      # Monday-Thursday 5pm ET dailies
 """
 
 import argparse
@@ -33,14 +35,17 @@ from lib.fetch_utils import Client, time_chunks, write_parquet
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 SERIES = "KXBTCD"
-OUT_DIR = Path(__file__).resolve().parent / "data" / "raw" / "kalshi_btc_weekly"
+RAW_DIR = Path(__file__).resolve().parent / "data" / "raw"
+OUT_DIR = RAW_DIR / "kalshi_btc_weekly"
 CANDLE_COLS = ["ts", "bid_open", "bid_high", "bid_low", "bid_close",
                "ask_open", "ask_high", "ask_low", "ask_close", "volume", "open_interest"]
 
 EXPIRY_HOUR_ET = "17"
 FRIDAY = 4
+EXPIRY_WEEKDAYS = {"weekly": frozenset({FRIDAY}), "daily": frozenset({0, 1, 2, 3})}
 MAX_CANDLES = 5000  # per candlestick request
 MIN_WEEKLY_LIFE_S = 6 * 24 * 3600  # weeklies live 169h, dailies 25h
+MIN_DAILY_LIFE_S = 20 * 3600
 
 # Event tickers: KXBTCD-26OCT0217, BTCD-24OCT2317, BTCD-24JUN07-17 -> (date, ET hour)
 _TICKER_RE = re.compile(r"-(\d{2}[A-Z]{3}\d{2})-?(\d{2})$")
@@ -50,13 +55,13 @@ def event_date(event_ticker: str) -> date:
     return datetime.strptime(_TICKER_RE.search(event_ticker).group(1), "%y%b%d").date()
 
 
-def is_candidate(event_ticker: str, start: date, end: date) -> bool:
-    """Friday 5pm ET expiry within [start, end]. Whether it actually lived a week is checked later."""
+def is_candidate(event_ticker: str, start: date, end: date, weekdays=EXPIRY_WEEKDAYS["weekly"]) -> bool:
+    """5pm ET expiry on one of `weekdays` (default Friday) within [start, end]. How long it lived is checked later."""
     m = _TICKER_RE.search(event_ticker)
     if not m or m.group(2) != EXPIRY_HOUR_ET:
         return False
     d = event_date(event_ticker)
-    return d.weekday() == FRIDAY and start <= d <= end
+    return d.weekday() in weekdays and start <= d <= end
 
 
 def _num(x) -> float:
@@ -92,13 +97,13 @@ def _ts(iso: str) -> int:
 
 
 def classify_event(markets: list[dict]) -> str:
-    """'weekly', 'too_short' (a 25h daily that happens to expire Friday), 'unsettled' or 'no_markets'."""
+    """'weekly', 'daily' (lived 20h to 6 days, e.g. a 25h daily), 'too_short', 'unsettled' or 'no_markets'."""
     if not markets:
         return "no_markets"
     if any(m["status"] != "finalized" for m in markets):
         return "unsettled"
     life = max(_ts(m["close_time"]) for m in markets) - min(_ts(m["open_time"]) for m in markets)
-    return "weekly" if life >= MIN_WEEKLY_LIFE_S else "too_short"
+    return "weekly" if life >= MIN_WEEKLY_LIFE_S else "daily" if life >= MIN_DAILY_LIFE_S else "too_short"
 
 
 def candle_rows(candles: list[dict]) -> list[dict]:
@@ -182,11 +187,12 @@ def fetch_candles(client: Client, market: dict) -> list[dict]:
     return out
 
 
-def fetch_event(client: Client, event_ticker: str, out: Path) -> tuple[str, int]:
-    """Fetch one event's ladder, settlement index and candles to disk. Returns (classification, n_candles)."""
+def fetch_event(client: Client, event_ticker: str, out: Path, product: str = "weekly") -> tuple[str, int]:
+    """Fetch one event's ladder, settlement index and candles to disk if it is a `product` ('weekly' or 'daily').
+    Returns (classification, n_candles)."""
     markets = fetch_markets(client, event_ticker)
     kind = classify_event(markets)
-    if kind != "weekly":
+    if kind != product:
         return kind, 0
 
     live = client.get(f"/live_data/events/{event_ticker}")["live_data"]
@@ -244,25 +250,28 @@ def main(argv=None) -> None:
     p.add_argument("--start", type=date.fromisoformat, default=date(2025, 10, 1), help="first expiry date")
     p.add_argument("--end", type=date.fromisoformat, default=date(2026, 10, 1), help="last expiry date")
     p.add_argument("--limit", type=int, help="fetch at most N events not yet on disk (for testing)")
-    p.add_argument("--out", type=Path, default=OUT_DIR)
+    p.add_argument("--product", choices=sorted(EXPIRY_WEEKDAYS), default="weekly",
+                   help="weekly: Friday 5pm ET weeklies; daily: Monday-Thursday 5pm ET dailies")
+    p.add_argument("--out", type=Path, help="default data/raw/kalshi_btc_{product}")
     a = p.parse_args(argv)
+    a.out = a.out or RAW_DIR / f"kalshi_btc_{a.product}"
 
     # Public reads cost 10 tokens against a bucket refilling ~20/s: ~2 requests/s
     client = Client(BASE_URL, min_interval=0.5)
     events = sorted(
         (t for t in {e["event_ticker"] for e in _paginate(client, "/events", "events", series_ticker=SERIES, limit=200)}
-         if is_candidate(t, a.start, a.end)),
+         if is_candidate(t, a.start, a.end, EXPIRY_WEEKDAYS[a.product])),
         key=event_date,
     )
     todo = [t for t in events if not (a.out / "candles" / f"{t}.parquet").exists()]
-    print(f"{len(events)} Friday 5pm events with expiry in {a.start}..{a.end}; {len(events) - len(todo)} already on disk")
+    print(f"{len(events)} {a.product} 5pm candidate events with expiry in {a.start}..{a.end}; {len(events) - len(todo)} already on disk")
     todo = todo[: a.limit] if a.limit else todo
 
     t_run = time.monotonic()
     for i, t in enumerate(todo, 1):
         t0, n0 = time.monotonic(), client.n_requests
-        kind, n = fetch_event(client, t, a.out)
-        detail = f"{n:,} candles" if kind == "weekly" else f"skipped ({kind})"
+        kind, n = fetch_event(client, t, a.out, a.product)
+        detail = f"{n:,} candles" if kind == a.product else f"skipped ({kind})"
         print(f"[{i}/{len(todo)}] {t}: {detail}  [{client.n_requests - n0} req, {time.monotonic() - t0:.0f}s]", flush=True)
 
     combine(a.out)

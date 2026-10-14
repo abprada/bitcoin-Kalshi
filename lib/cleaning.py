@@ -1,4 +1,5 @@
-"""Cleaning rules for the Kalshi weekly BTC quotes and exchange spot (used by 02_clean_data.py).
+"""Cleaning rules for the Kalshi weekly BTC quotes and exchange spot (used by 02_clean_data.py; the dailies in
+lib/term.py go through the same `event_quotes`).
 
 Each function implements one documented rule; 02_clean_data.py applies them, shows the evidence for
 each rule and writes the clean dataset.
@@ -116,3 +117,29 @@ def exchange_open(ts) -> np.ndarray:
 def tau_years(ts, expiry) -> np.ndarray:
     """Time to expiry in years, ACT/365."""
     return (pd.Series(expiry - pd.Series(pd.DatetimeIndex(ts)))).dt.total_seconds().to_numpy() / YEAR_SECONDS
+
+
+def event_quotes(candles: pd.DataFrame, markets: pd.DataFrame, spot: pd.Series, spot_stale: pd.Series) -> pd.DataFrame:
+    """Rules R4-R8 for one event: the forward-filled quote grid with sides, mid and spread, exchange hours, spot
+    and moneyness. `candles` and `markets` are one event's raw files; `spot`/`spot_stale` from `clean_spot`."""
+    g = build_event_grid(candles, markets)                                  # R4
+    bid, ask = quote_sides(g.bid_raw.to_numpy(), g.ask_raw.to_numpy())      # R5
+    spread, mid = mid_and_spread(bid, ask)                                  # R6
+    is_open = exchange_open(g.ts)                                           # R7
+    s = spot.reindex(g.ts).to_numpy()
+    return pd.DataFrame({
+        # plain strings (parquet dictionary-encodes them): per-file categoricals cannot be read as one folder
+        "event_ticker": markets.event_ticker.iloc[0],
+        "market_ticker": g.market_ticker.astype(str),
+        "strike": g.strike.astype("float32"),
+        "ts": g.ts,
+        "tau_years": tau_years(g.ts, markets.close_time.max()).astype("float32"),
+        "bid": bid.astype("float32"), "ask": ask.astype("float32"),
+        "spread": spread.astype("float32"), "mid": mid.astype("float32"),
+        "quote_age_min": g.quote_age_min,
+        "exchange_open": is_open,
+        "usable": ~np.isnan(mid) & is_open,                                 # R8
+        "volume": g.volume, "open_interest": g.open_interest,
+        "spot": s, "spot_stale": spot_stale.reindex(g.ts).to_numpy(),
+        "log_moneyness": np.log(g.strike.to_numpy() / s).astype("float32"),
+    })

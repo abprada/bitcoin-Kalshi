@@ -143,10 +143,25 @@ def test_classify_event_week_long_and_settled_is_weekly():
     assert fd.classify_event(rs) == "weekly"
 
 
-def test_classify_event_daily_friday_is_too_short():
+def test_classify_event_daily_friday_is_daily():
     # Early-2024 Fridays were 25h dailies
     rs = rows(("2024-04-04T20:00:00Z", "2024-04-05T21:00:00Z", "finalized"))
+    assert fd.classify_event(rs) == "daily"
+
+
+def test_classify_event_under_20h_is_too_short():
+    rs = rows(("2026-09-24T20:00:00Z", "2026-09-25T12:00:00Z", "finalized"))
     assert fd.classify_event(rs) == "too_short"
+
+
+@pytest.mark.parametrize("ticker, want", [
+    ("KXBTCD-26SEP2417", True),   # Thursday 5pm
+    ("KXBTCD-26SEP2117", True),   # Monday 5pm
+    ("KXBTCD-26SEP2517", False),  # Friday 5pm: the weekly
+    ("KXBTCD-26SEP2416", False),  # Thursday 4pm
+])
+def test_is_candidate_daily_keeps_monday_to_thursday_5pm(ticker, want):
+    assert fd.is_candidate(ticker, START, END, fd.EXPIRY_WEEKDAYS["daily"]) is want
 
 
 def test_classify_event_any_unfinalized_strike_is_unsettled():

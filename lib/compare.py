@@ -20,8 +20,8 @@ AFTERNOON_UTC = (19 * 60 + 30, 22 * 60 + 29)   # the us_afternoon window, in min
 MONEYNESS_EDGES = [-0.15, -0.05, -0.02, -0.005, 0.005, 0.02, 0.05, 0.15]
 MONEYNESS_LABELS = ["5–15% below", "2–5% below", "0.5–2% below", "within 0.5%", "0.5–2% above", "2–5% above",
                     "5–15% above"]
-KALSHI_FEE_RATE = 0.07      # Kalshi taker fee per contract = rate x P x (1 - P), rounded up to the cent (check the
-                            # current fee schedule before relying on it)
+KALSHI_FEE_RATE = 0.07      # Kalshi's general taker fee per order = round up(rate x C x P x (1 - P)) for C contracts
+                            # at price P (Kalshi fee schedule, checked Oct 2026; makers pay a quarter of it)
 MIN_STRIKES_PER_SD = 2      # Kalshi snapshot grid check, as in 03's "clean"
 
 
@@ -78,10 +78,11 @@ def direct_digital(K, marks: pd.DataFrame, half_width: float = 500.0) -> np.ndar
     return (lo - hi) / (2 * half_width)
 
 
-def kalshi_fee(price, rate: float = KALSHI_FEE_RATE) -> np.ndarray:
-    """Kalshi taker fee per contract in dollars: rate x P x (1 - P), rounded up to the cent."""
+def kalshi_fee(price, rate: float = KALSHI_FEE_RATE, contracts: int = 1) -> np.ndarray:
+    """Kalshi taker fee per contract in dollars, for an order of `contracts` at `price`: the order's fee
+    rate x C x P x (1 - P) is rounded up to the cent, so the rounding matters less the bigger the order."""
     p = np.asarray(price, dtype=float)
-    return np.ceil(np.round(100 * rate * p * (1 - p), 9)) / 100
+    return np.ceil(np.round(100 * rate * contracts * p * (1 - p), 9)) / 100 / contracts
 
 
 def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strikes: int = MIN_DERIBIT_STRIKES) -> dict:

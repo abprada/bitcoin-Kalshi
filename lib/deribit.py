@@ -19,13 +19,14 @@ ATM_BAND = 0.01               # |ln(K / index)| below this counts as at the mone
 
 
 def load_trades(path: Path) -> pd.DataFrame:
-    """Read the trades CSV and add time to expiry, moneyness, decimal vols and flags.
+    """Read the trades (the collaborator's CSV, or 00_fetch_deribit_all.py's parquet with every trade) and add time to
+    expiry, moneyness, decimal vols and flags.
 
     Added columns: `ts`, `expiry` (UTC), `tau_years`, `log_moneyness` = ln(K / index), `iv_deribit` (decimal,
     NaN for placeholders), `iv_mark` (our Black-Scholes inversion of the mark price, forward = index),
     `iv_valid`, `exact_dup` (True for every repeat of an identical earlier row).
     """
-    d = pd.read_csv(path)
+    d = pd.read_parquet(path) if Path(path).suffix == ".parquet" else pd.read_csv(path)
     d["ts"] = pd.to_datetime(d.time_utc, format="ISO8601", utc=True)
     d["expiry"] = pd.to_datetime(d.expiry_utc, utc=True)
     d["tau_years"] = (d.expiry - d.ts).dt.total_seconds() / YEAR_SECONDS

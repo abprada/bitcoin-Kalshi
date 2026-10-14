@@ -54,6 +54,11 @@ def test_kalshi_fee_rounds_up_to_the_cent():
     np.testing.assert_allclose(compare.kalshi_fee([0.5, 0.1]), [0.02, 0.01])
 
 
+def test_kalshi_fee_rounds_the_whole_order():
+    # 100 contracts at 10c: 0.07 x 100 x 0.1 x 0.9 = $0.63, so 0.63c each rather than 1c
+    np.testing.assert_allclose(compare.kalshi_fee(0.1, contracts=100), 0.0063)
+
+
 def test_nearest_marks_takes_the_closest_call_per_strike():
     ts = pd.Timestamp("2026-06-29 20:30", tz="UTC")
     t = pd.DataFrame({"strike": [61_000.0, 61_000.0, 62_000.0, 61_000.0],

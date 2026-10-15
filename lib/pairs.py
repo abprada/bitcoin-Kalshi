@@ -212,3 +212,30 @@ def gap_with_profile(pairs: pd.DataFrame, profile: pd.Series) -> pd.Series:
     much the result depends on the historical one."""
     ratio = deribit.horizon_vol_ratios(pairs.minute, pairs.kalshi_expiry, pairs.deribit_expiry, profile)
     return 100 * (pairs.kalshi_iv - pairs.deribit_iv * ratio)
+
+
+def cached_pairs(root: Path) -> dict:
+    """`build_pairs`, saved to data/derived/pairs*.parquet on first use and read back afterwards (pairing every
+    Deribit trade takes about 15 minutes). Delete those files to rebuild, e.g. after new data. Returns `pairs`,
+    `funnel`, `hour_profile` and `trade_offsets`: for every Deribit trade inside a pair, its time minus the Kalshi
+    quote's minute end, in seconds (negative = the trade came first)."""
+    d = Path(root) / "data" / "derived"
+    files = {k: d / f"pairs{s}.parquet" for k, s in
+             [("pairs", ""), ("funnel", "_funnel"), ("hour_profile", "_hour_profile"), ("trade_offsets", "_trade_offsets")]}
+    if all(f.exists() for f in files.values()):
+        out = {k: pd.read_parquet(f) for k, f in files.items()}
+        out["hour_profile"] = out["hour_profile"].iloc[:, 0]
+        out["trade_offsets"] = out["trade_offsets"].iloc[:, 0]
+        return out
+    r = build_pairs(root)
+    p, t = r["pairs"], r["trades"]
+    keys = pd.MultiIndex.from_frame(p[["expiry", "strike", "minute"]])
+    t = t.assign(minute=t.ts.dt.round("min"))
+    inside = pd.MultiIndex.from_frame(t[["expiry", "strike", "minute"]]).isin(keys)
+    offsets = (t.ts - t.minute).dt.total_seconds()[inside].rename("offset_s").reset_index(drop=True)
+    d.mkdir(parents=True, exist_ok=True)
+    p.to_parquet(files["pairs"])
+    r["funnel"].to_parquet(files["funnel"])
+    r["hour_profile"].rename("variance").to_frame().to_parquet(files["hour_profile"])
+    offsets.to_frame().to_parquet(files["trade_offsets"])
+    return {"pairs": p, "funnel": r["funnel"], "hour_profile": r["hour_profile"], "trade_offsets": offsets}

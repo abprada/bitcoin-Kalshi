@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"background": "#fcfcfb", "font": "system-ui, -apple-system, 'Segoe UI', sans-serif", "view": {"stroke": null}, "axis": {"gridColor": "#e1e0d9", "domainColor": "#c3c2b7", "tickColor": "#c3c2b7", "labelColor": "#52514e", "titleColor": "#52514e", "titleFontWeight": "normal", "labelFontSize": 13, "titleFontSize": 14}, "legend": {"labelColor": "#52514e", "titleColor": "#52514e", "orient": "top", "labelFontSize": 13, "symbolStrokeWidth": 3}, "axisX": {"labelAngle": 0}, "title": {"color": "#0b0b0b", "anchor": "start", "fontWeight": 600, "fontSize": 18, "subtitleColor": "#52514e", "subtitleFontSize": 13, "subtitlePadding": 6, "offset": 12}, "line": {"strokeWidth": 2.5}, "point": {"size": 70, "filled": true}}, "layer": [{"mark": {"type": "area", "color": "#898781", "opacity": 0.25}, "encoding": {"x": {"axis": {"values": [-3, -2, -1, 0, 1, 2, 3]}, "field": "sd", "scale": {"domain": [-3, 3], "nice": false}, "title": "strike: standard deviations from the money (negative = below spot)", "type": "quantitative"}, "y": {"field": "ci_low", "type": "quantitative"}, "y2": {"field": "ci_high"}}}, {"mark": {"type": "line", "color": "#0b0b0b", "point": {"color": "#0b0b0b", "size": 55}}, "encoding": {"tooltip": [{"field": "sd", "title": "SD", "type": "quantitative"}, {"field": "median_gap", "format": "+.2f", "title": "spread", "type": "quantitative"}, {"field": "ci_low", "format": "+.2f", "title": "95% low", "type": "quantitative"}, {"field": "ci_high", "format": "+.2f", "title": "95% high", "type": "quantitative"}, {"field": "pairs", "format": ",", "type": "quantitative"}, {"field": "days", "title": "days with pairs", "type": "quantitative"}], "x": {"axis": {"values": [-3, -2, -1, 0, 1, 2, 3]}, "field": "sd", "scale": {"domain": [-3, 3], "nice": false}, "title": "strike: standard deviations from the money (negative = below spot)", "type": "quantitative"}, "y": {"field": "median_gap", "title": "Kalshi \u2212 Deribit (vol points)", "type": "quantitative"}}}, {"data": {"name": "data-a0a55d106695e8d630baff0f16eee66d"}, "mark": {"type": "rule", "color": "#898781", "strokeDash": [4, 3]}, "encoding": {"y": {"field": "y", "type": "quantitative"}}}], "data": {"name": "data-d6a24b8a4dc4dcf7aab8d7084c20da87"}, "height": 280, "title": {"text": "The spread across strikes: Kalshi \u2212 Deribit (stretched)", "subtitle": "Median per half-SD bucket; shaded: 95% interval resampling whole days; buckets with 100+ pairs."}, "width": 760, "$schema": "https://vega.github.io/schema/vega-lite/v6.4.1.json", "datasets": {"data-d6a24b8a4dc4dcf7aab8d7084c20da87": [{"sd_bucket": -3.0, "pairs": 1286, "days": 132, "median_gap": -5.10071139845667, "ci_low": -7.1787566019366675, "ci_high": -3.2811718783303108, "kalshi_higher": 0.2667185069984448, "sd": -3.0}, {"sd_bucket": -2.5, "pairs": 4653, "days": 277, "median_gap": -6.8055626986259, "ci_low": -7.9032014828554376, "ci_high": -5.812728259699927, "kalshi_higher": 0.1601117558564367, "sd": -2.5}, {"sd_bucket": -2.0, "pairs": 10097, "days": 333, "median_gap": -5.471396563214359, "ci_low": -6.084406075439608, "ci_high": -4.898530268468721, "kalshi_higher": 0.16896107754778647, "sd": -2.0}, {"sd_bucket": -1.5, "pairs": 16814, "days": 340, "median_gap": -3.258294366940925, "ci_low": -3.859059993297445, "ci_high": -2.5970189313894876, "kalshi_higher": 0.2563340073748067, "sd": -1.5}, {"sd_bucket": -1.0, "pairs": 24324, "days": 346, "median_gap": -1.52044751050123, "ci_low": -2.006769123332987, "ci_high": -1.0633859320169263, "kalshi_higher": 0.35594474592994574, "sd": -1.0}, {"sd_bucket": -0.5, "pairs": 31930, "days": 354, "median_gap": -0.026434515950457538, "ci_low": -0.44964821771840424, "ci_high": 0.3450028857649047, "kalshi_higher": 0.4966176010021923, "sd": -0.5}, {"sd_bucket": 0.0, "pairs": 53055, "days": 358, "median_gap": 1.2153235764115422, "ci_low": 0.8903658875461516, "ci_high": 1.5576824667772535, "kalshi_higher": 0.640919800207332, "sd": 0.0}, {"sd_bucket": 0.5, "pairs": 37873, "days": 356, "median_gap": 1.7138619955448076, "ci_low": 1.2507961007371982, "ci_high": 2.110158335766496, "kalshi_higher": 0.6772106777915665, "sd": 0.5}, {"sd_bucket": 1.0, "pairs": 26345, "days": 347, "median_gap": 1.5788934049505654, "ci_low": 1.124435623424895, "ci_high": 2.059154283445576, "kalshi_higher": 0.6549629910799013, "sd": 1.0}, {"sd_bucket": 1.5, "pairs": 16522, "days": 340, "median_gap": 0.18190256140727945, "ci_low": -0.36171987246628606, "ci_high": 0.8093899647860101, "kalshi_higher": 0.5135576806682, "sd": 1.5}, {"sd_bucket": 2.0, "pairs": 7856, "days": 313, "median_gap": -1.3262959588921486, "ci_low": -2.3226743038429607, "ci_high": -0.29634926695548097, "kalshi_higher": 0.422479633401222, "sd": 2.0}, {"sd_bucket": 2.5, "pairs": 1897, "days": 170, "median_gap": -0.6429020230418858, "ci_low": -1.8060331264473615, "ci_high": 0.716881967466211, "kalshi_higher": 0.45598313125988404, "sd": 2.5}, {"sd_bucket": 3.0, "pairs": 222, "days": 43, "median_gap": 3.110177781282439, "ci_low": -4.254704658880129, "ci_high": 6.260083428758343, "kalshi_higher": 0.6171171171171171, "sd": 3.0}], "data-a0a55d106695e8d630baff0f16eee66d": [{"y": 0}]}};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>

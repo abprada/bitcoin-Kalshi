@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"background": "#fcfcfb", "font": "system-ui, -apple-system, 'Segoe UI', sans-serif", "view": {"stroke": null}, "axis": {"gridColor": "#e1e0d9", "domainColor": "#c3c2b7", "tickColor": "#c3c2b7", "labelColor": "#52514e", "titleColor": "#52514e", "titleFontWeight": "normal", "labelFontSize": 13, "titleFontSize": 14}, "legend": {"labelColor": "#52514e", "titleColor": "#52514e", "orient": "top", "labelFontSize": 13, "symbolStrokeWidth": 3}, "axisX": {"labelAngle": 0}, "title": {"color": "#0b0b0b", "anchor": "start", "fontWeight": 600, "fontSize": 18, "subtitleColor": "#52514e", "subtitleFontSize": 13, "subtitlePadding": 6, "offset": 12}, "line": {"strokeWidth": 2.5}, "point": {"size": 70, "filled": true}}, "layer": [{"mark": {"type": "area", "color": "#898781", "opacity": 0.25}, "encoding": {"x": {"field": "days", "scale": {"domain": [0.5, 7], "nice": false}, "title": "days to Kalshi's expiry", "type": "quantitative"}, "y": {"field": "ci_low", "type": "quantitative"}, "y2": {"field": "ci_high"}}}, {"mark": {"type": "line", "color": "#0b0b0b", "point": {"color": "#0b0b0b", "size": 55}}, "encoding": {"tooltip": [{"field": "days", "title": "days left", "type": "quantitative"}, {"field": "median_gap", "format": "+.2f", "title": "spread", "type": "quantitative"}, {"field": "ci_low", "format": "+.2f", "title": "95% low", "type": "quantitative"}, {"field": "ci_high", "format": "+.2f", "title": "95% high", "type": "quantitative"}, {"field": "pairs", "format": ",", "type": "quantitative"}, {"field": "n_days", "title": "days with pairs", "type": "quantitative"}], "x": {"field": "days", "scale": {"domain": [0.5, 7], "nice": false}, "title": "days to Kalshi's expiry", "type": "quantitative"}, "y": {"field": "median_gap", "title": "Kalshi \u2212 Deribit (vol points)", "type": "quantitative"}}}, {"data": {"name": "data-a0a55d106695e8d630baff0f16eee66d"}, "mark": {"type": "rule", "color": "#898781", "strokeDash": [4, 3]}, "encoding": {"y": {"field": "y", "type": "quantitative"}}}], "data": {"name": "data-7985801cd3a461ed89f4cbbc70db3ddd"}, "height": 280, "title": {"text": "The ATM spread: Kalshi \u2212 Deribit (stretched)", "subtitle": "Median per half-day bin; shaded: 95% interval resampling whole days."}, "width": 760, "$schema": "https://vega.github.io/schema/vega-lite/v6.4.1.json", "datasets": {"data-7985801cd3a461ed89f4cbbc70db3ddd": [{"pairs": 5115, "n_days": 95, "median_gap": 2.9152208452585535, "ci_low": 1.6401351050503075, "ci_high": 4.257813982200543, "kalshi_higher": 0.6729227761485826, "days": 0.75}, {"pairs": 8312, "n_days": 51, "median_gap": 2.7065196846215587, "ci_low": 1.778919054932024, "ci_high": 3.892726317808332, "kalshi_higher": 0.7164340712223292, "days": 1.25}, {"pairs": 3271, "n_days": 100, "median_gap": 1.3087438458020628, "ci_low": 0.08405833140613315, "ci_high": 2.4163671925900974, "kalshi_higher": 0.6074594925099358, "days": 1.75}, {"pairs": 6055, "n_days": 51, "median_gap": 1.6775775356314027, "ci_low": 0.487716511491605, "ci_high": 2.8689974055563754, "kalshi_higher": 0.6525185796862097, "days": 2.25}, {"pairs": 3345, "n_days": 102, "median_gap": 1.5393697505607706, "ci_low": 0.28989710864708135, "ci_high": 2.3114959719044212, "kalshi_higher": 0.648729446935725, "days": 2.75}, {"pairs": 5743, "n_days": 51, "median_gap": 1.6297447225228356, "ci_low": 1.0896053576807772, "ci_high": 2.147456414563139, "kalshi_higher": 0.7381159672644959, "days": 3.25}, {"pairs": 3266, "n_days": 99, "median_gap": 1.4658749809971976, "ci_low": 0.8618800351433527, "ci_high": 1.982655776982647, "kalshi_higher": 0.7278015921616656, "days": 3.75}, {"pairs": 5617, "n_days": 51, "median_gap": 1.2355047118173201, "ci_low": 0.7110118363696509, "ci_high": 1.8981665444147744, "kalshi_higher": 0.7034003916681503, "days": 4.25}, {"pairs": 4009, "n_days": 101, "median_gap": -0.08765983568780888, "ci_low": -0.7856822763960214, "ci_high": 0.44025685000381726, "kalshi_higher": 0.4861561486655026, "days": 4.75}, {"pairs": 2162, "n_days": 50, "median_gap": -0.6883637423233918, "ci_low": -1.420994011312342, "ci_high": 0.2682763313090377, "kalshi_higher": 0.4005550416281221, "days": 5.25}, {"pairs": 1789, "n_days": 92, "median_gap": -0.2379454216018595, "ci_low": -0.9222236736505048, "ci_high": 0.5251154274229494, "kalshi_higher": 0.4589155953046395, "days": 5.75}, {"pairs": 2042, "n_days": 51, "median_gap": -0.0820091502154674, "ci_low": -0.9292770563465397, "ci_high": 0.5071911684520746, "kalshi_higher": 0.4813907933398629, "days": 6.25}, {"pairs": 2050, "n_days": 100, "median_gap": 0.23319922819209637, "ci_low": -0.31848948672705824, "ci_high": 0.8173900449959615, "kalshi_higher": 0.5414634146341464, "days": 6.75}], "data-a0a55d106695e8d630baff0f16eee66d": [{"y": 0}]}};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>

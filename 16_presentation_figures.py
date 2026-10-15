@@ -153,7 +153,7 @@ def _(DERIBIT, H, INK2, W, alt, mo, pd, snaps15_d):
           .describe(percentiles=[.1, .5, .9])[["10%", "50%", "90%", "count"]].reset_index())
     _b["days"] = _b.days.map(lambda i: i.mid).astype(float)
     _b = _b[_b["count"] >= 100]
-    _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
+    _x = alt.X("days:Q", title="days to Kalshi's expiry (expiry on the right)", scale=alt.Scale(domain=[0.5, 7], nice=False, reverse=True))
     stretch_chart = (
         alt.Chart(_b).mark_area(color=DERIBIT, opacity=0.18).encode(x=_x, y="10%:Q", y2="90%:Q")
         + alt.Chart(_b).mark_line(color=DERIBIT, point=alt.OverlayMarkDef(size=50, color=DERIBIT)).encode(
@@ -255,7 +255,7 @@ def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, mo, pairs, pd, snaps15_d):
     # many Deribit trades it had, so busy (volatile) days dominate and the levels jump between bins.
     DAY_EDGES = [x / 2 for x in range(1, 15)]                   # half-day bins, 0.5 to 7 days
     _scale = alt.Scale(domain=["Kalshi", "Deribit (stretched)"], range=[KALSHI, DERIBIT])
-    _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
+    _x = alt.X("days:Q", title="days to Kalshi's expiry (expiry on the right)", scale=alt.Scale(domain=[0.5, 7], nice=False, reverse=True))
 
 
     def term_charts(d, kalshi, deribit_, unit, min_n, n_label, title, subtitle):
@@ -415,13 +415,16 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
     surface_both = _fig([_surface("kalshi", "Kalshi", _blues, 0.95, False),
                          _surface("deribit", "Deribit (stretched)", _oranges, 0.7, False)],
                         "Kalshi (blue) and Deribit (orange) on the same axes")
-    _gmax = float(surf.gap.abs().quantile(0.95))
-    surface_gap = _fig([go.Surface(x=_sd, y=_days, z=surf.pivot(index="days", columns="sd", values="gap")
-                                   .reindex(index=_days, columns=_sd).to_numpy(),
+    # The spread surface: strikes within ±2 standard deviations of the money only
+    _gsurf = surf[surf.sd.abs() <= 2]
+    _sd2 = [s for s in _sd if abs(s) <= 2]
+    _gmax = float(_gsurf.gap.abs().quantile(0.95))
+    surface_gap = _fig([go.Surface(x=_sd2, y=_days, z=_gsurf.pivot(index="days", columns="sd", values="gap")
+                                   .reindex(index=_days, columns=_sd2).to_numpy(),
                                    colorscale=[[0, "#c4501f"], [0.5, "#f0efec"], [1, "#1f5fae"]], cmin=-_gmax, cmax=_gmax,
                                    colorbar=dict(title="points"),
                                    hovertemplate="%{x:+.1f} SD<br>%{y} days left<br>Kalshi − Deribit %{z:+.1f} points<extra></extra>")],
-                       "Spread surface: Kalshi − Deribit, vol points (blue: Kalshi higher; orange: Deribit higher)",
+                       "Spread surface: Kalshi − Deribit, vol points, ±2 SD (blue: Kalshi higher; orange: Deribit higher)",
                        zaxis=dict(title="Kalshi − Deribit (points)", tickformat="+.0f"))
 
     # Flat versions for a static slide
@@ -445,7 +448,7 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
                                       ).resolve_scale(color="independent").properties(title=alt.TitleParams(
                                           "Implied-vol surfaces on the same 15-minute snapshots",
                                           subtitle="Median per cell of each vol ÷ Kalshi's ATM vol, × the row's median ATM vol; cells with 40+ strike-snapshots."))
-    _gb = alt.Chart(surf).encode(x=_x, y=_y, tooltip=_tip)
+    _gb = alt.Chart(_gsurf).encode(x=_x, y=_y, tooltip=_tip)
     gap_heat_chart = (
         _gb.mark_rect(stroke="#fcfcfb", strokeWidth=1.5).encode(color=alt.Color(
             "gap:Q", title="points", scale=alt.Scale(domain=[-_gmax, 0, _gmax], range=["#c4501f", "#f0efec", "#1f5fae"],
@@ -453,7 +456,7 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
         + _gb.mark_text(fontSize=11).encode(text=alt.Text("gap:Q", format="+.1f"), color=alt.condition(
             f"abs(datum.gap) > {_gmax * 0.6:.2f}", alt.value("white"), alt.value("#0b0b0b")))
     ).properties(width=W, height=260, title=alt.TitleParams(
-        "Spread surface: Kalshi − Deribit (stretched), vol points",
+        "Spread surface: Kalshi − Deribit (stretched), vol points, within ±2 standard deviations",
         subtitle="Blue: Kalshi higher; orange: Deribit higher. Median of the strike-snapshots' own spreads per cell."))
     mo.vstack([
         mo.md("""

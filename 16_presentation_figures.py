@@ -12,9 +12,9 @@ def _():
     import altair as alt
     import plotly.graph_objects as go
 
-    from lib import deribit, iv, pairs
+    from lib import compare, iv, pairs
 
-    return alt, deribit, go, iv, mo, np, pairs, pd
+    return alt, compare, go, iv, mo, np, pairs, pd
 
 
 @app.cell
@@ -22,10 +22,17 @@ def _(mo):
     mo.md(r"""
     # 16 · Presentation figures: Kalshi vs Deribit
 
-    The figures for the Kalshi vs Deribit slides, in slide order, each with the numbers to quote. Everything comes
-    from the same **pairs** as `05`: every Deribit trade in a Friday expiry, matched with Kalshi's weekly ladder at
-    the same strike and minute (`lib/pairs.py`). The pairs are built once and cached in `data/derived/pairs*.parquet`
-    (about 15 minutes); delete those files to rebuild after new data.
+    The figures for the Kalshi vs Deribit slides, in slide order, each with the numbers to quote.
+
+    **How the two markets are lined up: every 15 minutes.** At every clean Kalshi snapshot (one every 15 minutes, as
+    in `03`), Kalshi's smile is compared with **Deribit's fitted smile** for the Friday expiry with the same date,
+    from the Deribit trades within ±30 minutes (`lib/compare.py`, `snapshot_comparison`). Every quarter-hour counts
+    once, whether or not Deribit traded at that minute, so busy (volatile) moments are not over-weighted. Deribit is
+    read at Kalshi's strikes only inside the strikes its smile was fitted to, and stretched to Kalshi's expiry.
+
+    The alternative used in `05`, **trade pairs** (each Deribit trade matched with Kalshi's quote at the same minute,
+    `lib/pairs.py`), counts each Deribit trade once, so busy moments weigh more; its charts are kept as backups. Both
+    are cached in `data/derived/` (`snapshot15_*`, `pairs*`); delete those files to rebuild after new data.
 
     Run as a script (`python 16_presentation_figures.py`) it saves every chart to `outputs/presentation/`: a PNG at
     2× for the slides and, for the surfaces, HTML files that rotate in a browser. Opening it writes nothing.
@@ -65,19 +72,28 @@ def _(alt):
 
 
 @app.cell
-def _(mo, pairs, pd):
+def _(compare, mo, pairs, pd):
     ROOT = mo.notebook_dir()
     _r = pairs.cached_pairs(ROOT)
     paired, hour_profile, offsets = _r["pairs"], _r["hour_profile"], _r["trade_offsets"]
     atm = pairs.atm(paired)
+    _c = compare.cached_snapshot_comparison(ROOT, hour_profile)
+    cmp, snaps15, coverage = _c["strikes"], _c["snaps"], _c["coverage"]
+    snaps15_d = snaps15[snaps15.has_deribit].assign(days=lambda d: d.hours_to_expiry / 24, gap_adj=lambda d: d.gap_atm_adj)
     _ts = pd.read_parquet(ROOT / "data" / "clean" / "btc_spot_1m.parquet", columns=["ts"]).ts   # hour_profile's source
     SPOT_SPAN = f"{_ts.min():%b %Y} – {_ts.max():%b %Y}"
-    mo.md(f"""
-    **Data:** {len(paired):,} pairs on {paired.day.nunique()} days in {paired.event_ticker.nunique()} Kalshi weeklies
-    ({paired.day.min():%b %Y} – {paired.day.max():%b %Y}), {len(atm):,} of them at the money (within 0.25 standard
-    deviations), built from {len(offsets):,} Deribit trades.
-    """)
-    return ROOT, SPOT_SPAN, atm, hour_profile, offsets, paired
+    _live = snaps15.deribit_live
+    mo.vstack([
+        mo.md(f"""
+        **Data (15-minute snapshots):** {len(snaps15):,} clean Kalshi snapshots in {snaps15.event_ticker.nunique()}
+        weeklies ({snaps15.ts.min():%b %Y} – {snaps15.ts.max():%b %Y}). {int(_live.sum()):,} fall before Deribit's
+        Friday 08:00 expiry, and **{snaps15_d.shape[0] / _live.sum():.0%}** of those have a Deribit smile, so very few
+        moments drop out for lack of Deribit trades; {len(cmp):,} Kalshi strike vols are compared.
+        """),
+        mo.ui.table(coverage.assign(count=coverage["count"].map("{:,}".format)), selection=None,
+                    show_download=False, pagination=False),
+    ])
+    return ROOT, SPOT_SPAN, atm, cmp, hour_profile, offsets, snaps15, snaps15_d
 
 
 @app.cell
@@ -130,14 +146,13 @@ def _(CONTEXT, H, INK2, KALSHI, MUTED, SPOT_SPAN, W, alt, hour_profile, mo, np, 
 
 
 @app.cell
-def _(DERIBIT, H, INK2, W, alt, mo, paired, pd):
+def _(DERIBIT, H, INK2, W, alt, mo, pd, snaps15_d):
     # Slide 2: the stretch factor that puts Deribit's vol on Kalshi's horizon, by time to Kalshi's expiry
-    _p = paired.assign(days=paired.kalshi_hours / 24)
-    _p = _p[_p.days.between(0.5, 7)]
+    _p = snaps15_d[snaps15_d.days.between(0.5, 7)]
     _b = (_p.groupby(pd.cut(_p.days, [x / 4 for x in range(2, 29)]), observed=True).horizon_ratio
           .describe(percentiles=[.1, .5, .9])[["10%", "50%", "90%", "count"]].reset_index())
     _b["days"] = _b.days.map(lambda i: i.mid).astype(float)
-    _b = _b[_b["count"] >= 200]
+    _b = _b[_b["count"] >= 100]
     _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
     stretch_chart = (
         alt.Chart(_b).mark_area(color=DERIBIT, opacity=0.18).encode(x=_x, y="10%:Q", y2="90%:Q")
@@ -145,10 +160,10 @@ def _(DERIBIT, H, INK2, W, alt, mo, paired, pd):
             x=_x, y=alt.Y("50%:Q", title="Deribit vol is multiplied by", scale=alt.Scale(zero=False),
                           axis=alt.Axis(format=".2f", labelExpr="'×' + format(datum.value, '.2f')")),
             tooltip=[alt.Tooltip("days:Q", title="days left", format=".2f"), alt.Tooltip("50%:Q", title="median factor", format=".3f"),
-                     alt.Tooltip("10%:Q", format=".3f"), alt.Tooltip("90%:Q", format=".3f"), alt.Tooltip("count:Q", title="pairs", format=",")])
+                     alt.Tooltip("10%:Q", format=".3f"), alt.Tooltip("90%:Q", format=".3f"), alt.Tooltip("count:Q", title="snapshots", format=",")])
     ).properties(width=W, height=H, title=alt.TitleParams(
         "Stretching Deribit's vol to Kalshi's expiry matters most near expiry",
-        subtitle="Median factor per quarter-day (shaded: 10th–90th percentile of the pairs). "
+        subtitle="Median factor per quarter-day over the 15-minute snapshots (shaded: 10th–90th percentile). "
                  "Variance adds up hour by hour, each hour weighted by the profile on slide 1."))
     _week = _b[_b.days >= 6]["50%"].median()
     _day = _b[_b.days <= 1.5]["50%"].median()
@@ -174,8 +189,25 @@ def _(DERIBIT, H, INK2, W, alt, mo, paired, pd):
 
 
 @app.cell
-def _(DERIBIT, H, INK2, W, alt, mo, np, offsets, pd):
-    # Slide 3: Deribit is trades, Kalshi is a quote every minute: how far each trade is from the quote it is read against
+def _(DERIBIT, H, INK2, W, alt, mo, np, offsets, pd, snaps15):
+    # Slide 3: Kalshi is a quote every minute, Deribit only trades. Main chart: at each 15-minute Kalshi snapshot, how
+    # far away the nearest Deribit trade in the matching expiry is. Backup: the trade-pairs' trade-to-quote distance.
+    _live = snaps15[snaps15.deribit_live & snaps15.nearest_trade_s.notna()]
+    _bins = [0, 15, 30, 60, 120, 300, 600, 1800, np.inf]
+    _labels = ["< 15 s", "15–30 s", "30–60 s", "1–2 min", "2–5 min", "5–10 min", "10–30 min", "> 30 min"]
+    _n = (pd.cut(_live.nearest_trade_s, _bins, labels=_labels, include_lowest=True, right=False)
+          .value_counts(normalize=True, sort=False).rename("share").rename_axis("bin").reset_index())
+    _n["bin"] = _n.bin.astype(str)
+    _med = _live.nearest_trade_s.median()
+    trade_distance_chart = alt.Chart(_n).mark_bar(color=DERIBIT, cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+        x=alt.X("bin:N", title="distance from a Kalshi snapshot to the nearest Deribit trade in that expiry", sort=_labels),
+        y=alt.Y("share:Q", title="share of Kalshi snapshots", axis=alt.Axis(format=".0%")),
+        tooltip=[alt.Tooltip("bin:N", title="nearest trade"), alt.Tooltip("share:Q", format=".1%")]
+    ).properties(width=W, height=H, title=alt.TitleParams(
+        "Kalshi quotes continuously; Deribit is only seen when someone trades",
+        subtitle=f"{len(_live):,} Kalshi snapshots (every 15 minutes); nearest Deribit trade a median {_med:.0f} s away, "
+                 f"{(_live.nearest_trade_s <= 120).mean():.0%} within 2 minutes. Deribit's smile there uses a median of "
+                 f"{snaps15.n_trades.median():.0f} trades within ±30 min."))
     _edges = np.arange(-30, 31, 2)
     _h = pd.cut(offsets, _edges, include_lowest=True).value_counts(normalize=True, sort=False)
     _d = pd.DataFrame({"lo": [i.left for i in _h.index], "hi": [i.right for i in _h.index], "share": _h.to_numpy()})
@@ -191,7 +223,7 @@ def _(DERIBIT, H, INK2, W, alt, mo, np, offsets, pd):
                      alt.Tooltip("share:Q", title="share", format=".1%")])
         + alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=INK2, strokeDash=[4, 3]).encode(x="x:Q")
     ).properties(width=W, height=H, title=alt.TitleParams(
-        "Every Deribit trade is compared with Kalshi's quote at most 30 seconds away",
+        "Backup (trade pairs): each Deribit trade vs Kalshi's quote at most 30 seconds away",
         subtitle=f"{len(offsets):,} Deribit trades; median distance {_abs.median():.0f} s, "
                  f"{(_abs <= 10).mean():.0%} within 10 s. Kalshi's quote is its bid/ask at the nearest minute end."))
     mo.vstack([
@@ -199,43 +231,28 @@ def _(DERIBIT, H, INK2, W, alt, mo, np, offsets, pd):
         ## Slide 3 · Trades vs continuous quotes
 
         **Kalshi** posts a bid and ask on every strike, every minute, so its smile exists at any moment. **Deribit**
-        data are individual **trades**: a strike is only observed when someone trades it. So each Deribit trade sets
-        the moment and Kalshi is read at the nearest minute end. By construction no trade is more than 30 seconds
-        from its Kalshi quote; the median is **{_abs.median():.0f} seconds**. Trades are spread across the minute,
-        with a peak in the first few seconds after the minute mark. Deribit's vol is taken from the trade's **mark price** (Deribit's fair value
-        at that instant), not the traded price, which sits on the bid or the ask.
+        data are individual **trades**: a strike is only observed when someone trades it, and no quotes are recorded.
+        So at each Kalshi snapshot Deribit's smile is **fitted to the trades around it** (±30 minutes, each at its
+        **mark price**, Deribit's fair value at that instant, so it does not matter whether the trade hit the bid or
+        the ask). The chart shows how fresh that information is: the nearest Deribit trade is a median
+        **{_med:.0f} seconds** from the Kalshi snapshot.
+        """),
+        trade_distance_chart,
+        mo.md(f"""
+        **Backup: the trade-pairs method** (`05`). Each Deribit trade is matched with Kalshi's quote at the nearest
+        minute end, at most 30 seconds away (median **{_abs.median():.0f} s**). It compares at exactly the same
+        moment, but only at moments when Deribit traded, so busy periods count more.
         """),
         offset_chart,
     ])
-    return (offset_chart,)
+    return offset_chart, trade_distance_chart
 
 
 @app.cell
-def _(ROOT, deribit, hour_profile, pd):
-    # Every hour, not only the paired moments: each clean hourly Kalshi snapshot (03, every weekly) against Deribit's
-    # fitted ATM vol for the Friday expiry with the same date at the same hour (08's hourly smile grid), stretched to
-    # Kalshi's expiry exactly as in the pairs. Each week-hour counts once.
-    _s = pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet")
-    _k = _s[_s.clean & (_s.ts.dt.minute == 0)].copy()
-    _k["kalshi_expiry"] = (_k.ts + pd.to_timedelta(_k.hours_to_expiry, unit="h")).dt.round("h")
-    _k["deribit_expiry"] = _k.kalshi_expiry.dt.normalize() + pd.Timedelta(hours=8)
-    _g = pd.read_parquet(ROOT / "data" / "derived" / "strategies" / "deribit_grid_centred.parquet",
-                         columns=["expiry", "t", "atm_iv"])
-    hourly = _k.merge(_g.rename(columns={"expiry": "deribit_expiry", "t": "ts", "atm_iv": "deribit_atm"}),
-                      on=["deribit_expiry", "ts"])
-    hourly["deribit_adj"] = hourly.deribit_atm * deribit.horizon_vol_ratios(
-        hourly.ts, hourly.kalshi_expiry, hourly.deribit_expiry, hour_profile)
-    hourly["gap_adj"] = 100 * (hourly.atm_iv - hourly.deribit_adj)
-    hourly["days"] = hourly.hours_to_expiry / 24
-    n_hourly_kalshi = len(_k)
-    return hourly, n_hourly_kalshi
-
-
-@app.cell
-def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, hourly, mo, n_hourly_kalshi, pairs, pd):
+def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, mo, pairs, pd, snaps15_d):
     # Slide 4: ATM vol by time to Kalshi's expiry, Kalshi vs Deribit stretched, and their spread.
-    # Main version: every hour (smooth, each week-hour counts once). Backup: the paired trades, which weight each
-    # moment by how many Deribit trades it had, so busy (volatile) days dominate and the levels jump between bins.
+    # Main version: every 15-minute snapshot counts once. Backup: the paired trades, which weight each moment by how
+    # many Deribit trades it had, so busy (volatile) days dominate and the levels jump between bins.
     DAY_EDGES = [x / 2 for x in range(1, 15)]                   # half-day bins, 0.5 to 7 days
     _scale = alt.Scale(domain=["Kalshi", "Deribit (stretched)"], range=[KALSHI, DERIBIT])
     _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
@@ -276,10 +293,10 @@ def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, hourly, mo, n_hourly_kalshi, 
 
 
     atm_term_chart, atm_spread_chart, _g, _all = term_charts(
-        hourly, "atm_iv", "deribit_adj", "event_ticker", 100, "hours",
+        snaps15_d, "atm_iv", "deribit_atm_adj", "event_ticker", 200, "snapshots",
         "At the money, Kalshi prices more volatility than Deribit, most of all near expiry",
-        f"Every hour: Kalshi's ATM vol vs Deribit's fitted ATM vol for the same Friday, stretched to Kalshi's expiry; "
-        f"{len(hourly):,} hours in {hourly.event_ticker.nunique()} weeks.")
+        f"Every 15 minutes: Kalshi's ATM vol vs Deribit's fitted ATM vol for the same Friday, stretched to Kalshi's "
+        f"expiry; {len(snaps15_d):,} snapshots in {snaps15_d.event_ticker.nunique()} weeks.")
     atm_term_pairs_chart, atm_spread_pairs_chart, _gp, _allp = term_charts(
         atm.assign(days=atm.kalshi_hours / 24), "kalshi_iv", "deribit_iv_adj", "day", 200, "pairs",
         "Backup: the same comparison on the paired trades only",
@@ -289,20 +306,20 @@ def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, hourly, mo, n_hourly_kalshi, 
         mo.md(f"""
         ## Slide 4 · ATM implied vol by time to maturity
 
-        **Every hour of every week**, not just the moments when Deribit traded: Kalshi's ATM vol from each clean hourly
-        snapshot ({len(hourly):,} of {n_hourly_kalshi:,} have a Deribit Friday expiry still live), against Deribit's
-        fitted ATM vol for the same Friday at the same hour, stretched to Kalshi's expiry. Overall Kalshi is
-        **{_all.median_gap:+.1f} points** above Deribit (95% interval {_all.ci_low:+.1f} to {_all.ci_high:+.1f},
-        resampling whole weeks), higher in {_all.kalshi_higher:.0%} of hours. The spread is about **{_near:+.1f}**
-        points with about a day left and **{_far:+.1f}** with 5–7 days left.
+        **Every 15 minutes**, not just the moments when Deribit traded: Kalshi's ATM vol at each clean snapshot,
+        against Deribit's fitted ATM vol for the same Friday at the same moment, stretched to Kalshi's expiry. Overall
+        Kalshi is **{_all.median_gap:+.1f} points** above Deribit (95% interval {_all.ci_low:+.1f} to
+        {_all.ci_high:+.1f}, resampling whole weeks), higher in {_all.kalshi_higher:.0%} of snapshots. The spread is
+        about **{_near:+.1f}** points with about a day left and **{_far:+.1f}** with 5–7 days left.
         """),
         atm_term_chart,
         atm_spread_chart,
         mo.md(f"""
-        **Why the paired version (below) is noisier.** A pair exists only when someone trades a near-the-money Deribit
-        strike, and every trade counts once, so busy days, which are the volatile days, dominate whichever bins they
-        fall in and the *levels* jump from bin to bin. The *spread* is far steadier because each pair compares the two
-        markets at the same minute. It tells the same story: {_allp.median_gap:+.1f} points overall at the money.
+        **Backup: the trade-pairs version, and why it is noisier.** A pair exists only when someone trades a
+        near-the-money Deribit strike, and every trade counts once, so busy days, which are the volatile days, dominate
+        whichever bins they fall in and the *levels* jump from bin to bin. The *spread* is steadier because each pair
+        compares the two markets at the same minute, and it tells the same story: {_allp.median_gap:+.1f} points
+        overall at the money.
         """),
         atm_term_pairs_chart,
         atm_spread_pairs_chart,
@@ -311,16 +328,16 @@ def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, hourly, mo, n_hourly_kalshi, 
 
 
 @app.cell
-def _(H, INK, MARKETS, MUTED, W, alt, mo, paired, pairs, pd):
+def _(H, INK, MARKETS, MUTED, W, alt, mo, cmp, pairs, pd):
     # Slide 5: the smile, implied vol against strike in standard deviations, both markets, and their spread
-    _keep = pairs.gap_table(paired, "sd_bucket", col="gap_adj")
+    _keep = pairs.gap_table(cmp, "sd_bucket", col="gap_adj")
     _keep = _keep[_keep.pairs >= 100]
     _sds = _keep.sd_bucket.astype(float)
     # Levels as shapes (each vol over Kalshi's ATM vol at that minute, median per bucket), scaled by the median
     # Kalshi ATM vol, so calm and volatile weeks pool without distorting the wings (as in 05 and 03)
-    _atm_level = float(pairs.atm(paired).kalshi_atm.median())
-    _s = (paired.assign(Kalshi=paired.kalshi_iv / paired.kalshi_atm,
-                        **{"Deribit (stretched)": paired.deribit_iv_adj / paired.kalshi_atm})
+    _atm_level = float(pairs.atm(cmp).kalshi_atm.median())
+    _s = (cmp.assign(Kalshi=cmp.kalshi_iv / cmp.kalshi_atm,
+                        **{"Deribit (stretched)": cmp.deribit_iv_adj / cmp.kalshi_atm})
           .groupby("sd_bucket", observed=True)[["Kalshi", "Deribit (stretched)"]].median() * _atm_level)
     _s = _s.reset_index().assign(sd=lambda d: d.sd_bucket.astype(float))
     _s = _s[_s.sd.isin(_sds)].drop(columns="sd_bucket").melt(id_vars="sd", var_name="market", value_name="vol")
@@ -343,11 +360,11 @@ def _(H, INK, MARKETS, MUTED, W, alt, mo, paired, pairs, pd):
             x=_x, y=alt.Y("median_gap:Q", title="Kalshi − Deribit (vol points)"),
             tooltip=[alt.Tooltip("sd:Q", title="SD"), alt.Tooltip("median_gap:Q", title="spread", format="+.2f"),
                      alt.Tooltip("ci_low:Q", title="95% low", format="+.2f"), alt.Tooltip("ci_high:Q", title="95% high", format="+.2f"),
-                     alt.Tooltip("pairs:Q", format=","), alt.Tooltip("days:Q", title="days with pairs")])
+                     alt.Tooltip("pairs:Q", title="strike-snapshots", format=","), alt.Tooltip("days:Q", title="days")])
         + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
     ).properties(width=W, height=H - 60, title=alt.TitleParams(
         "The spread across strikes: Kalshi − Deribit (stretched)",
-        subtitle="Median per half-SD bucket; shaded: 95% interval resampling whole days; buckets with 100+ pairs."))
+        subtitle="Median per half-SD bucket; shaded: 95% interval resampling whole days; buckets with 100+ strike-snapshots."))
     _k = _keep.set_index("sd")
     _c = _k.loc[0.0] if 0.0 in _k.index else None
     mo.vstack([
@@ -358,8 +375,8 @@ def _(H, INK, MARKETS, MUTED, W, alt, mo, paired, pairs, pd):
         ln(K / F) ÷ (Kalshi ATM vol × √time left), where F is Kalshi's forward, within a few hundredths of a percent of
         spot over a week. Kalshi is **{_c.median_gap:+.1f}** points above Deribit at the money but
         **{_k.loc[-2.0].median_gap:+.1f}** two standard deviations below and **{_k.loc[2.0].median_gap:+.1f}** two above.
-        Kalshi is richer around the money; Deribit is clearly richer on the downside (crash protection), while on the
-        upside the two are within a couple of points and the far call wing rests on few pairs.
+        Kalshi is richer around the money; Deribit's smile is steeper in both wings, by far the most on the downside
+        (crash protection).
         """),
         smile_chart,
         smile_spread_chart,
@@ -368,9 +385,9 @@ def _(H, INK, MARKETS, MUTED, W, alt, mo, paired, pairs, pd):
 
 
 @app.cell
-def _(INK2, W, alt, go, mo, paired, pairs):
-    # Slide 6: the surfaces, on the same pairs and axes; rotatable 3D (HTML) plus flat heatmaps for a static slide
-    surf = pairs.surface(paired)
+def _(INK2, W, alt, go, mo, cmp, pairs):
+    # Slide 6: the surfaces, on the same 15-minute snapshots and axes; rotatable 3D (HTML) plus flat heatmaps for a static slide
+    surf = pairs.surface(cmp)
     surf["days"] = ((surf.hours_lo + surf.hours_hi) / 48).round().astype(int)
     _sd = sorted(surf.sd.unique())
     _days = sorted(surf.days.unique())
@@ -412,7 +429,7 @@ def _(INK2, W, alt, go, mo, paired, pairs):
     _y = alt.Y("days:O", title="days to Kalshi's expiry", sort="descending")
     _tip = [alt.Tooltip("days:O", title="days left"), alt.Tooltip("sd:Q", title="SD"),
             alt.Tooltip("kalshi:Q", format=".1%", title="Kalshi"), alt.Tooltip("deribit:Q", format=".1%", title="Deribit"),
-            alt.Tooltip("gap:Q", format="+.1f", title="spread (points)"), alt.Tooltip("pairs:Q", format=",")]
+            alt.Tooltip("gap:Q", format="+.1f", title="spread (points)"), alt.Tooltip("pairs:Q", title="strike-snapshots", format=",")]
 
     def _heat(col, title, rng):
         b = alt.Chart(surf).encode(x=_x, y=_y, tooltip=_tip)
@@ -426,8 +443,8 @@ def _(INK2, W, alt, go, mo, paired, pairs):
     surfaces_heat_chart = alt.hconcat(_heat("kalshi", "Kalshi", ["#cde2fb", "#0d366b"]),
                                       _heat("deribit", "Deribit (stretched)", ["#fde3d6", "#7a2a0e"])
                                       ).resolve_scale(color="independent").properties(title=alt.TitleParams(
-                                          "Implied-vol surfaces on the same pairs",
-                                          subtitle="Median per cell of each vol ÷ Kalshi's ATM vol, × the row's median ATM vol; cells with 40+ pairs."))
+                                          "Implied-vol surfaces on the same 15-minute snapshots",
+                                          subtitle="Median per cell of each vol ÷ Kalshi's ATM vol, × the row's median ATM vol; cells with 40+ strike-snapshots."))
     _gb = alt.Chart(surf).encode(x=_x, y=_y, tooltip=_tip)
     gap_heat_chart = (
         _gb.mark_rect(stroke="#fcfcfb", strokeWidth=1.5).encode(color=alt.Color(
@@ -437,12 +454,12 @@ def _(INK2, W, alt, go, mo, paired, pairs):
             f"abs(datum.gap) > {_gmax * 0.6:.2f}", alt.value("white"), alt.value("#0b0b0b")))
     ).properties(width=W, height=260, title=alt.TitleParams(
         "Spread surface: Kalshi − Deribit (stretched), vol points",
-        subtitle="Blue: Kalshi higher; orange: Deribit higher. Median of the pairs' own spreads per cell."))
+        subtitle="Blue: Kalshi higher; orange: Deribit higher. Median of the strike-snapshots' own spreads per cell."))
     mo.vstack([
         mo.md("""
         ## Slide 6 · Implied-vol surfaces
 
-        Built on exactly the same pairs, so the two surfaces are directly comparable: rows are days to Kalshi's expiry,
+        Built on exactly the same 15-minute snapshots and strikes, so the two surfaces are directly comparable: rows are days to Kalshi's expiry,
         columns half-SD strike buckets. Drag to rotate, scroll to zoom, hover for values. Saved as HTML files that open
         in any browser, for a live demo or a link from the slide; flat heatmaps below for a static slide.
         """),
@@ -530,6 +547,7 @@ def _(
     kalshi_all_heat_chart,
     mo,
     offset_chart,
+    trade_distance_chart,
     smile_chart,
     smile_spread_chart,
     stretch_chart,
@@ -546,7 +564,7 @@ def _(
         _out = ROOT / "outputs" / "presentation"
         _out.mkdir(parents=True, exist_ok=True)
         for _name, _chart in [("1_week_vol_profile", week_vol_chart), ("2_stretch_factor", stretch_chart),
-                              ("3_trade_to_quote_distance", offset_chart), ("4a_atm_vol_by_maturity", atm_term_chart),
+                              ("3_nearest_deribit_trade", trade_distance_chart), ("3b_backup_pairs_trade_to_quote", offset_chart), ("4a_atm_vol_by_maturity", atm_term_chart),
                               ("4b_atm_spread_by_maturity", atm_spread_chart),
                               ("4c_backup_atm_vol_pairs_only", atm_term_pairs_chart),
                               ("4d_backup_atm_spread_pairs_only", atm_spread_pairs_chart), ("5a_smile", smile_chart),

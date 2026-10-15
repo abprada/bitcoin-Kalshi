@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"background": "#fcfcfb", "font": "system-ui, -apple-system, 'Segoe UI', sans-serif", "view": {"stroke": null}, "axis": {"gridColor": "#e1e0d9", "domainColor": "#c3c2b7", "tickColor": "#c3c2b7", "labelColor": "#52514e", "titleColor": "#52514e", "titleFontWeight": "normal", "labelFontSize": 13, "titleFontSize": 14}, "legend": {"labelColor": "#52514e", "titleColor": "#52514e", "orient": "top", "labelFontSize": 13, "symbolStrokeWidth": 3}, "axisX": {"labelAngle": 0}, "title": {"color": "#0b0b0b", "anchor": "start", "fontWeight": 600, "fontSize": 18, "subtitleColor": "#52514e", "subtitleFontSize": 13, "subtitlePadding": 6, "offset": 12}, "line": {"strokeWidth": 2.5}, "point": {"size": 70, "filled": true}}, "data": {"name": "data-3834f246a094cb69a9e59ab843d3744f"}, "mark": {"type": "line", "point": {"size": 55}}, "encoding": {"color": {"field": "market", "scale": {"domain": ["Kalshi", "Deribit (stretched)"], "range": ["#2a78d6", "#eb6834"]}, "title": null, "type": "nominal"}, "tooltip": [{"field": "market", "type": "nominal"}, {"field": "days", "title": "days left", "type": "quantitative"}, {"field": "vol", "format": ".1%", "type": "quantitative"}, {"field": "n", "format": ",", "title": "snapshots", "type": "quantitative"}], "x": {"field": "days", "scale": {"domain": [0.5, 7], "nice": false, "reverse": true}, "title": "days to Kalshi's expiry (expiry on the right)", "type": "quantitative"}, "y": {"axis": {"format": "%"}, "field": "vol", "scale": {"zero": false}, "title": "implied vol at the money (median)", "type": "quantitative"}}, "height": 340, "title": {"text": "At the money, Kalshi prices more volatility than Deribit, most of all near expiry", "subtitle": "Every 15 minutes: Kalshi's ATM vol vs Deribit's fitted ATM vol for the same Friday, stretched to Kalshi's expiry; 23,962 snapshots in 51 weeks."}, "width": 760, "$schema": "https://vega.github.io/schema/vega-lite/v6.4.1.json", "datasets": {"data-3834f246a094cb69a9e59ab843d3744f": [{"days": 0.75, "n": 1721, "market": "Kalshi", "vol": 0.46890528119512603}, {"days": 1.25, "n": 2060, "market": "Kalshi", "vol": 0.4513778839830585}, {"days": 1.75, "n": 1814, "market": "Kalshi", "vol": 0.4314838293586118}, {"days": 2.25, "n": 2219, "market": "Kalshi", "vol": 0.4439519924389912}, {"days": 2.75, "n": 1995, "market": "Kalshi", "vol": 0.42576354419595036}, {"days": 3.25, "n": 2095, "market": "Kalshi", "vol": 0.4273478344842278}, {"days": 3.75, "n": 1865, "market": "Kalshi", "vol": 0.4105160533437852}, {"days": 4.25, "n": 1992, "market": "Kalshi", "vol": 0.41432929226059695}, {"days": 4.75, "n": 1825, "market": "Kalshi", "vol": 0.410750399293647}, {"days": 5.25, "n": 1672, "market": "Kalshi", "vol": 0.4211186279202326}, {"days": 5.75, "n": 1538, "market": "Kalshi", "vol": 0.4127930594253844}, {"days": 6.25, "n": 1540, "market": "Kalshi", "vol": 0.39014688111701235}, {"days": 6.75, "n": 1507, "market": "Kalshi", "vol": 0.37594140682039207}, {"days": 0.75, "n": 1721, "market": "Deribit (stretched)", "vol": 0.42706505182647936}, {"days": 1.25, "n": 2060, "market": "Deribit (stretched)", "vol": 0.42164701529875326}, {"days": 1.75, "n": 1814, "market": "Deribit (stretched)", "vol": 0.4115019455839744}, {"days": 2.25, "n": 2219, "market": "Deribit (stretched)", "vol": 0.4197048877153822}, {"days": 2.75, "n": 1995, "market": "Deribit (stretched)", "vol": 0.4203053203615639}, {"days": 3.25, "n": 2095, "market": "Deribit (stretched)", "vol": 0.41929065623254147}, {"days": 3.75, "n": 1865, "market": "Deribit (stretched)", "vol": 0.4040357803136549}, {"days": 4.25, "n": 1992, "market": "Deribit (stretched)", "vol": 0.4072405009760294}, {"days": 4.75, "n": 1825, "market": "Deribit (stretched)", "vol": 0.4088554785954207}, {"days": 5.25, "n": 1672, "market": "Deribit (stretched)", "vol": 0.42529076922919995}, {"days": 5.75, "n": 1538, "market": "Deribit (stretched)", "vol": 0.41654937937243447}, {"days": 6.25, "n": 1540, "market": "Deribit (stretched)", "vol": 0.3934861047036654}, {"days": 6.75, "n": 1507, "market": "Deribit (stretched)", "vol": 0.3738309365750667}]}};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>

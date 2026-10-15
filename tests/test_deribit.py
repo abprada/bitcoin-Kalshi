@@ -90,3 +90,19 @@ def test_horizon_vol_ratios_match_the_hour_by_hour_version():
     long_end = pd.DatetimeIndex(["2026-03-06 22:00", "2026-03-06 22:00", "2026-03-13 21:00"], tz="UTC")  # 3rd crosses a week
     loop = [deribit.horizon_vol_ratio(a, b, c, prof) for a, b, c in zip(start, long_end, short_end)]
     np.testing.assert_allclose(deribit.horizon_vol_ratios(start, long_end, short_end, prof), loop, rtol=1e-9)
+
+
+def test_trades_path_prefers_the_full_file(tmp_path):
+    assert deribit.trades_path(tmp_path) == tmp_path / deribit.COLLAB_TRADES
+    assert not deribit.is_full(deribit.trades_path(tmp_path))
+    full = tmp_path / deribit.FULL_TRADES
+    full.parent.mkdir(parents=True)
+    full.touch()
+    assert deribit.trades_path(tmp_path) == full and deribit.is_full(full)
+
+
+def test_expiry_weekday_filter(tmp_path):
+    friday, thursday = row(), row()
+    thursday[3] = "2026-03-05T08:00:00+00:00"    # expiry_utc
+    d = deribit.load_trades(write_trades(tmp_path, [friday, thursday]), expiry_weekday=4)
+    assert len(d) == 1 and d.expiry.iloc[0].dayofweek == 4

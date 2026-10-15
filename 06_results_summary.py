@@ -47,8 +47,9 @@ def _(alt):
 @app.cell(hide_code=True)
 def _(mo, np, pairs, pd):
     ROOT = mo.notebook_dir()
-    # every Deribit trade paired with Kalshi's vol at the same strike and minute (lib/pairs.py, about 90 seconds)
-    _r = pairs.build_pairs(ROOT)
+    # every Deribit trade paired with Kalshi's vol at the same strike and minute (lib/pairs.py); built once and saved
+    # in data/derived/pairs*.parquet (about 15 minutes on the full Deribit data), read back afterwards
+    _r = pairs.cached_pairs(ROOT)
     paired, hour_profile = _r["pairs"], _r["hour_profile"]
     kalshi_weeks = pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet", columns=["event_ticker"]).event_ticker.nunique()
 
@@ -67,7 +68,7 @@ def _(mo, np, pairs, pd):
              .assign(day=lambda d: pd.to_datetime(d.day)))
     stats = dict(
         pairs=len(paired), pair_days=paired.day.nunique(), pair_weeklies=paired.event_ticker.nunique(),
-        deribit_trades=len(_r["trades"]),
+        deribit_trades=int(_r["funnel"]["count"].iloc[0]),     # the funnel's first step: the Deribit trades considered
         atm_gap_raw=_atm.gap_raw.median(), atm_gap_adj=_head.median_gap, atm_ci_low=_head.ci_low,
         atm_ci_high=_head.ci_high, atm_kalshi_higher=_head.kalshi_higher,
         far_gap_adj=_by_sd.loc[-2.0, "median_gap"], far_up_adj=_by_sd.loc[2.0, "median_gap"],
@@ -122,7 +123,7 @@ def _(kalshi_weeks, mo, pd, stats):
         ("Kalshi", "Weekly BTC contracts (KXBTCD): '$1 if BTC > K at 5pm ET Friday'",
          f"{kalshi_weeks} weeks, Oct 2025 – Sep 2026, ~54 strikes $500 apart, 1-minute bid/ask"),
         ("Deribit", "BTC options (calls and puts), all expiring 08:00 UTC",
-         f"{stats['deribit_trades']:,} trades in Friday expiries, 19:30–22:29 UTC, Jan – Sep 2026, with Deribit's mark price"),
+         f"{stats['deribit_trades']:,} trades in Friday expiries, all day, Nov 2024 – Sep 2026, with Deribit's mark price"),
         ("Bitcoin price", "Coinbase and Bitstamp, average", "every minute; within 0.015% of Kalshi's settlement index"),
         ("Pairs", "every Deribit trade with Kalshi's vol at the same strike, at most 30 seconds apart",
          f"{stats['pairs']:,} pairs on {stats['pair_days']} days ({stats['pair_weeklies']} weeks)"),
@@ -144,7 +145,7 @@ def _(mo, stats):
     each contract directly is too noisy near the current price and biased low by the smile, so it is not used.)
 
     **Step 2. Line Kalshi up with Deribit.** Kalshi quotes every strike every minute; our Deribit data are individual
-    trades, 19:30–22:29 UTC, at whatever strikes people trade. Three mismatches, each handled:
+    trades, at any hour, at whatever strikes people trade. Three mismatches, each handled:
 
     | Mismatch | Fix |
     |---|---|

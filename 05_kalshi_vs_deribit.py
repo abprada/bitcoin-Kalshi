@@ -91,7 +91,7 @@ def _(funnel, mo, pairs, paired, pd):
     _sources = pd.DataFrame([
         ("Kalshi", "bid and ask of every strike ($250–500 apart), every minute, all week",
          "a full smile is available at any minute"),
-        ("Deribit", "individual trades only, 19:30–22:29 UTC, January–September 2026",
+        ("Deribit", f"individual trades only, all day, {paired.day.min():%b %Y} – {paired.day.max():%b %Y} where Kalshi's weeklies trade",
          "a strike appears only when someone trades it"),
     ], columns=["market", "what we observe", "consequence"])
     mo.vstack([
@@ -123,7 +123,7 @@ def _(funnel, mo, pairs, paired, pd):
                     pagination=False),
         mo.md(f"""
         **{len(paired):,} pairs on {paired.day.nunique()} days** in {paired.event_ticker.nunique()} weeklies: a median of
-        **{_per_day.median():.0f} per afternoon** (10th–90th percentile {_per_day.quantile(.1):.0f}–{_per_day.quantile(.9):.0f}),
+        **{_per_day.median():.0f} per day** (10th–90th percentile {_per_day.quantile(.1):.0f}–{_per_day.quantile(.9):.0f}),
         of which {_atm_day.median():.0f} at the money. Most of the loss is Deribit trading Friday expiries more than a
         week away, before Kalshi lists that week. Deribit only trades a few strikes at a time, so this gives **the
         average smile over the year, not a full smile at any one moment**; that would need Deribit's quote data.
@@ -465,8 +465,8 @@ def _(W, alt, go, mo, pairs, paired, pd):
         ### The surfaces: all distances and expiries at once
 
         The same pairs, laid out by distance from the money (columns, half a standard deviation wide) and time to
-        Kalshi's expiry (rows). Deribit trades only in the US afternoon, so every pair is within about two hours of a
-        whole number of days before Kalshi's Friday 5pm expiry, and each row is one day. As for `03`'s surface, each
+        Kalshi's expiry (rows). Each row is one day: the 24 hours centred on a whole number of days before Kalshi's
+        Friday 5pm expiry, so pairs from every hour of the day fall in some row. As for `03`'s surface, each
         vol is divided by Kalshi's ATM vol at that minute, the median is taken per cell, and the result is scaled back
         by the row's typical ATM vol, so calm and volatile weeks do not distort the edges. Both markets are pooled on
         exactly the same pairs; Deribit is stretched to Kalshi's expiry. Cells with fewer than 40 pairs are empty.

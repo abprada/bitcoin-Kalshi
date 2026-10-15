@@ -21,8 +21,9 @@ def _(mo):
     mo.md(r"""
     # 14 · Backtests
 
-    Every trade is held to expiry, one per contract and entry rule (the Deribit file has two windows a day, so
-    intraday holds cannot be marked). Code in `lib/backtest.py`; P&L in **basis points of spot per 1 BTC of
+    Every trade is held to expiry, one per contract and entry rule (entries are in the collaborator's two daily
+    windows, 07:00–08:00 and 19:30–22:30 UTC, Jan 15 – Sep 30, 2026, as when this was first built with only that
+    file; the full-day Deribit data now on disk would also allow intraday holds). Code in `lib/backtest.py`; P&L in **basis points of spot per 1 BTC of
     straddle notional**, so Kalshi strips and Deribit straddles are in the same units. 95% intervals resample whole
     calendar weeks. For scale: an ATM straddle at 45% vol is worth about 75 bps with 3 hours left, 290 bps with one
     day and 500 bps with a week.
@@ -44,8 +45,7 @@ def _(ROOT, backtest, deribit, pd, term):
     snaps = term.kalshi_weekly_atm(pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet"), usable_only=False)
     daily_atm = term.kalshi_daily_atm(ROOT, usable_only=False)
     # every Deribit BTC option trade (00_fetch_deribit_all.py) if fetched, else the collaborator's two-window file
-    _full = ROOT / "data" / "raw" / "deribit_trades" / "btc_options_trades.parquet"
-    deribit_trades = deribit.load_trades(_full if _full.exists() else ROOT / "data" / "deribit_btc_options.csv.gz")
+    deribit_trades = deribit.load_trades(deribit.trades_path(ROOT))
     # ATM vols per expiry, day and window: only the collaborator's two windows, so 1-4 and 6 compare like for like
     deribit_obs = term.with_realized(term.deribit_atm(deribit_trades[deribit_trades.window != "other"]), cum)
     return cum, daily_atm, deribit_obs, deribit_trades, hour_profile, snaps, spot

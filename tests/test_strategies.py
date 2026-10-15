@@ -216,3 +216,16 @@ def test_book_keeps_one_position_per_contract_and_metrics_count_it():
     assert b.pnl_vol.tolist() == pytest.approx([(100 - 16) / 50] * 2)       # the first hour's trade each
     m = ab.metrics(b, "2026-03-01", "2026-03-10")
     assert m["trades"] == 2 and m["hit"] == 1.0
+
+
+def test_load_options_falls_back_to_the_full_file(tmp_path):
+    # Two trades: one 3.5 days from expiry (kept), one 20 days (beyond MAX_TTE_DAYS, dropped)
+    cols = ["window", "date", "instrument", "expiry_utc", "strike", "cp", "time_utc", "price_btc", "index_price",
+            "price_usd", "amount", "direction", "iv", "mark_price_btc", "trade_id", "block_trade_id"]
+    mk = lambda exp: ["other", "2026-03-02", f"BTC-X-90000-C", exp, 90_000.0, "C", "2026-03-02T20:00:00.000000+00:00",
+                      0.02, 90_000.0, 1800.0, 0.1, "buy", 45.0, 0.02, "1", None]
+    full = tmp_path / "data" / "raw" / "deribit_trades" / "btc_options_trades.parquet"
+    full.parent.mkdir(parents=True)
+    pd.DataFrame([mk("2026-03-06T08:00:00+00:00"), mk("2026-03-22T08:00:00+00:00")], columns=cols).to_parquet(full)
+    d = dm.load_options(tmp_path)
+    assert len(d) == 1 and d.tau_years.iloc[0] * 365 == pytest.approx(3.5)

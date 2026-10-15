@@ -82,19 +82,20 @@ def kalshi_smiles(quotes: pd.DataFrame, minutes) -> dict:
 
 
 def build_pairs(root: Path) -> dict:
-    """Pair every Deribit trade in the afternoon window with Kalshi's vol at the same strike and minute.
+    """Pair every Deribit trade with Kalshi's vol at the same strike and minute.
 
-    Deribit: trades in Friday expiries (the ones whose date matches a Kalshi weekly), 19:30-22:29 UTC, with a mark
-    vol, before expiry. Kalshi: the weekly expiring 5pm ET that Friday, its ladder at the trade's minute, used if
+    Deribit: trades in Friday expiries (the ones whose date matches a Kalshi weekly), with a mark vol, before expiry;
+    every hour from the full file (`deribit.trades_path`), 19:30-22:29 UTC only from the collaborator's CSV. Kalshi: the weekly expiring 5pm ET that Friday, its ladder at the trade's minute, used if
     it has an ATM vol and a fine enough strike grid (`compare.usable_kalshi_snapshots`). Needs data/clean from 02.
 
     Returns a dict: `pairs` (one row per observation with both vols), `funnel` (how many observations survive
     each step), `trades` (the Deribit trades considered), `hour_profile`.
     """
-    data, clean = root / "data", root / "data" / "clean"
-    trades = deribit.load_trades(data / "deribit_btc_options.csv.gz")
-    trades = trades[(trades.window == "us_afternoon") & (trades.expiry.dt.dayofweek == 4)
-                    & trades.iv_mark.notna() & (trades.ts < trades.expiry)]
+    clean = root / "data" / "clean"
+    path = deribit.trades_path(root)
+    trades = deribit.load_trades(path, expiry_weekday=4)
+    trades = trades[trades.iv_mark.notna() & (trades.ts < trades.expiry)
+                    & ((trades.window == "us_afternoon") | deribit.is_full(path))]
     obs = deribit_observations(trades)
     spot = pd.read_parquet(clean / "btc_spot_1m.parquet", columns=["ts", "spot"]).set_index("ts").spot
     hour_profile = deribit.hourly_variance(spot)
@@ -139,7 +140,8 @@ def build_pairs(root: Path) -> dict:
     p["day"] = p.minute.dt.date
 
     funnel = pd.DataFrame([
-        ("Deribit trades: afternoon window, Friday expiries, with a mark vol", len(trades)),
+        (f"Deribit trades: {'all day' if deribit.is_full(path) else 'afternoon window'}, Friday expiries, with a mark vol",
+         len(trades)),
         ("… as observations (fills at one strike and minute merged)", len(obs)),
         ("… while Kalshi's weekly for that Friday is trading", n_live),
         ("… with a usable Kalshi ladder that minute", n_ladder),
@@ -210,3 +212,30 @@ def gap_with_profile(pairs: pd.DataFrame, profile: pd.Series) -> pd.Series:
     much the result depends on the historical one."""
     ratio = deribit.horizon_vol_ratios(pairs.minute, pairs.kalshi_expiry, pairs.deribit_expiry, profile)
     return 100 * (pairs.kalshi_iv - pairs.deribit_iv * ratio)
+
+
+def cached_pairs(root: Path) -> dict:
+    """`build_pairs`, saved to data/derived/pairs*.parquet on first use and read back afterwards (pairing every
+    Deribit trade takes about 15 minutes). Delete those files to rebuild, e.g. after new data. Returns `pairs`,
+    `funnel`, `hour_profile` and `trade_offsets`: for every Deribit trade inside a pair, its time minus the Kalshi
+    quote's minute end, in seconds (negative = the trade came first)."""
+    d = Path(root) / "data" / "derived"
+    files = {k: d / f"pairs{s}.parquet" for k, s in
+             [("pairs", ""), ("funnel", "_funnel"), ("hour_profile", "_hour_profile"), ("trade_offsets", "_trade_offsets")]}
+    if all(f.exists() for f in files.values()):
+        out = {k: pd.read_parquet(f) for k, f in files.items()}
+        out["hour_profile"] = out["hour_profile"].iloc[:, 0]
+        out["trade_offsets"] = out["trade_offsets"].iloc[:, 0]
+        return out
+    r = build_pairs(root)
+    p, t = r["pairs"], r["trades"]
+    keys = pd.MultiIndex.from_frame(p[["expiry", "strike", "minute"]])
+    t = t.assign(minute=t.ts.dt.round("min"))
+    inside = pd.MultiIndex.from_frame(t[["expiry", "strike", "minute"]]).isin(keys)
+    offsets = (t.ts - t.minute).dt.total_seconds()[inside].rename("offset_s").reset_index(drop=True)
+    d.mkdir(parents=True, exist_ok=True)
+    p.to_parquet(files["pairs"])
+    r["funnel"].to_parquet(files["funnel"])
+    r["hour_profile"].rename("variance").to_frame().to_parquet(files["hour_profile"])
+    offsets.to_frame().to_parquet(files["trade_offsets"])
+    return {"pairs": p, "funnel": r["funnel"], "hour_profile": r["hour_profile"], "trade_offsets": offsets}

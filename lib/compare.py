@@ -97,12 +97,14 @@ def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strik
     times to expiry, stretch ratio), `snaps` (the Kalshi snapshots considered), `trades` (the Deribit trades used),
     `hour_profile`.
     """
-    data, clean, derived = root / "data", root / "data" / "clean", root / "data" / "derived"
+    clean, derived = root / "data" / "clean", root / "data" / "derived"
 
-    # Deribit: afternoon trades in Friday expiries (the only ones whose date matches a Kalshi weekly)
-    trades = deribit.load_trades(data / "deribit_btc_options.csv.gz")
-    trades = trades[(trades.window == "us_afternoon") & (trades.expiry.dt.dayofweek == 4)
-                    & trades.iv_mark.notna() & (trades.tau_years > 0)]
+    # Deribit: trades in Friday expiries (the only ones whose date matches a Kalshi weekly); from the full file every
+    # trade near a snapshot counts, from the collaborator's CSV only its afternoon window
+    path = deribit.trades_path(root)
+    trades = deribit.load_trades(path, expiry_weekday=4)
+    trades = trades[trades.iv_mark.notna() & (trades.tau_years > 0)
+                    & ((trades.window == "us_afternoon") | deribit.is_full(path))]
     by_expiry = {e: g for e, g in trades.groupby("expiry")}
 
     # Kalshi: usable snapshots in the same window, before the Deribit option with the same date expires
@@ -163,3 +165,96 @@ def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strik
     matched["vol_gap_adj"] = 100 * (matched.iv - matched.deribit_vol_adj)
     matched["price_gap_c"] = 100 * (matched.mid - matched.deribit_digital_adj)
     return dict(matched=matched, smiles=smiles, snaps=snaps, trades=trades, hour_profile=hour_profile)
+
+
+SNAPSHOT_HALF_WINDOW = "30min"   # Deribit trades within +/- this of a Kalshi snapshot form Deribit's smile there
+
+
+def snapshot_comparison(root: Path, hour_profile: pd.Series, half_window: str = SNAPSHOT_HALF_WINDOW) -> dict:
+    """Kalshi vs Deribit at every clean 15-minute Kalshi snapshot (03), each snapshot counting once whether or not
+    Deribit traded at that minute (`pairs` instead anchors on Deribit trades, so busy moments count more).
+
+    Deribit at a snapshot: its fitted smile for the Friday 08:00 expiry with the Kalshi weekly's date, from the trades
+    within +/- `half_window` (`deribit_marks.smile_grid` on a 15-minute grid: a quadratic in log-moneyness per root
+    year, at least 3 strikes around the forward). It is read at each Kalshi strike only inside the strikes it was
+    fitted to (no extrapolation), and its constant is Deribit's ATM vol. Both are stretched to Kalshi's expiry with
+    `hour_profile` (`deribit.horizon_vol_ratios`), as in `pairs`.
+
+    Returns `strikes` (one row per Kalshi strike and snapshot with a Deribit vol, in `pairs`' column names: kalshi_iv,
+    kalshi_atm, deribit_iv, deribit_iv_adj, gap_raw, gap_adj, sd, kalshi_hours, day, ...), `snaps` (one row per clean
+    Kalshi snapshot: ATM vols of both markets, `has_deribit`) and `coverage` (counts).
+    """
+    from lib import deribit_marks as dm   # here, not at the top: deribit_marks imports deribit, which this module also uses
+    from lib import pairs
+
+    k = pd.read_parquet(Path(root) / "data" / "derived" / "iv_strikes.parquet",
+                        columns=["snap", "event_ticker", "ts", "strike", "iv", "clean", "forward", "atm_iv", "tau_years",
+                                 "hours_to_expiry", "sd_from_forward", "spot"])
+    k = k[k.clean].drop(columns="clean")
+    k["kalshi_expiry"] = (k.ts + pd.to_timedelta(k.hours_to_expiry, unit="h")).dt.round("h")
+    k["deribit_expiry"] = k.kalshi_expiry.dt.normalize() + pd.Timedelta(hours=8)
+    snaps = k.drop_duplicates("snap")[["snap", "event_ticker", "ts", "atm_iv", "tau_years", "hours_to_expiry",
+                                       "kalshi_expiry", "deribit_expiry"]].reset_index(drop=True)
+
+    # Deribit: trades in those Friday expiries, from a day before the first snapshot, on a 15-minute smile grid
+    t = dm.read_full_trades(root, start=snaps.ts.min() - pd.Timedelta(days=1), end=snaps.ts.max(), max_tte_days=8)
+    t = dm.add_forward(t[t.expiry.isin(set(snaps.deribit_expiry))])   # a Kalshi weekly lives a week: 8 days is enough
+    grid = dm.smile_grid(t, freq="15min", half_window=half_window, centred=True)
+    grid = grid.rename(columns={"expiry": "deribit_expiry", "t": "ts", "atm_iv": "deribit_atm", "tau_years": "tau_d"})
+
+    snaps = snaps.merge(grid[["deribit_expiry", "ts", "deribit_atm", "n_trades"]], on=["deribit_expiry", "ts"], how="left")
+    # How far the nearest Deribit trade in that expiry is from each snapshot, either side (seconds)
+    us = "datetime64[us, UTC]"                       # merge_asof needs one resolution on both sides
+    near = pd.merge_asof(snaps[["snap", "ts", "deribit_expiry"]].astype({"ts": us, "deribit_expiry": us}).sort_values("ts"),
+                         t[["ts", "expiry"]].rename(columns={"ts": "trade_ts", "expiry": "deribit_expiry"})
+                         .astype({"trade_ts": us, "deribit_expiry": us}).sort_values("trade_ts"),
+                         left_on="ts", right_on="trade_ts", by="deribit_expiry", direction="nearest")
+    snaps = snaps.merge(near.assign(nearest_trade_s=(near.trade_ts - near.ts).dt.total_seconds().abs())[
+        ["snap", "nearest_trade_s"]], on="snap", how="left")
+    snaps["deribit_live"] = snaps.ts < snaps.deribit_expiry
+    snaps["has_deribit"] = snaps.deribit_atm.notna()
+    snaps["horizon_ratio"] = np.nan
+    live = snaps.deribit_live
+    snaps.loc[live, "horizon_ratio"] = deribit.horizon_vol_ratios(
+        snaps.ts[live], snaps.kalshi_expiry[live], snaps.deribit_expiry[live], hour_profile)
+    snaps["deribit_atm_adj"] = snaps.deribit_atm * snaps.horizon_ratio
+    snaps["gap_atm_raw"] = 100 * (snaps.atm_iv - snaps.deribit_atm)
+    snaps["gap_atm_adj"] = 100 * (snaps.atm_iv - snaps.deribit_atm_adj)
+    snaps["day"] = snaps.ts.dt.date
+
+    # Strike level: Deribit's fitted vol at each Kalshi strike, only inside the strikes Deribit's smile was fitted to
+    s = k.merge(grid, on=["deribit_expiry", "ts"]).merge(snaps[["snap", "horizon_ratio"]], on="snap")
+    fwd_d = s["index"] * (1 + s.basis)
+    m = np.log(s.strike / fwd_d) / np.sqrt(s.tau_d)
+    inside = (m >= s.m_lo) & (m <= s.m_hi)
+    s["deribit_iv"] = np.where(inside, s.deribit_atm + s.b * m + s.c * m**2, np.nan)
+    s = s[s.deribit_iv.notna() & s.iv.notna()].copy()
+    s = s.rename(columns={"iv": "kalshi_iv", "atm_iv": "kalshi_atm", "tau_years": "tau_k", "sd_from_forward": "sd",
+                          "hours_to_expiry": "kalshi_hours", "ts": "minute"})
+    s["deribit_iv_adj"] = s.deribit_iv * s.horizon_ratio
+    s["gap_raw"] = 100 * (s.kalshi_iv - s.deribit_iv)
+    s["gap_adj"] = 100 * (s.kalshi_iv - s.deribit_iv_adj)
+    s["sd_bucket"] = pd.cut(s.sd, pairs.SD_EDGES, labels=pairs.SD_CENTRES)
+    s["tte_bucket"] = pd.cut(s.kalshi_hours, pairs.TTE_EDGES, labels=pairs.TTE_LABELS)
+    s["day"] = s.minute.dt.date
+    s = s.drop(columns=["b", "c", "m_lo", "m_hi", "basis", "index", "n_strikes", "n_trades"]).reset_index(drop=True)
+
+    coverage = pd.DataFrame([
+        ("Clean Kalshi 15-minute snapshots", len(snaps)),
+        ("… while Deribit's Friday expiry is still live (before Friday 08:00 UTC)", int(live.sum())),
+        (f"… with a Deribit smile (3+ strikes traded within ±{half_window})", int(snaps.has_deribit.sum())),
+        ("Kalshi strike vols compared (inside Deribit's fitted strike range)", len(s)),
+    ], columns=["step", "count"])
+    return dict(strikes=s, snaps=snaps, coverage=coverage)
+
+
+def cached_snapshot_comparison(root: Path, hour_profile: pd.Series) -> dict:
+    """`snapshot_comparison`, saved to data/derived/snapshot15*.parquet on first use (delete them to rebuild)."""
+    d = Path(root) / "data" / "derived"
+    files = {k: d / f"snapshot15_{k}.parquet" for k in ("strikes", "snaps", "coverage")}
+    if all(f.exists() for f in files.values()):
+        return {k: pd.read_parquet(f) for k, f in files.items()}
+    r = snapshot_comparison(root, hour_profile)
+    for k, f in files.items():
+        r[k].to_parquet(f)
+    return r

@@ -147,3 +147,46 @@ def conditional_xcorr(p: pd.DataFrame, lags=range(-60, 61, 10), xs=range(-6, 7),
                          "ci_high": float(np.nanpercentile(rb, 97.5)) if ok.sum() >= 3 else np.nan,
                          "mean_gap": float(np.nanmean(gap0[ok])) if ok.any() else np.nan})
     return pd.DataFrame(rows)
+
+
+def after_dislocation(p: pd.DataFrame, xs=(0, 2, 4, 6), normal: float = NORMAL_GAP, delay_min: int = 30,
+                      horizons=range(10, 241, 10), bucket_hours: float = 12, n_boot: int = 300, seed: int = 0) -> pd.DataFrame:
+    """Event study: when the gap is above X + `normal` at time s, how do Kalshi's ATM vol, Deribit's and the gap move
+    from s + `delay_min` (when a trader could act) to s + delay_min + h?
+
+    Each change is taken relative to the average change over the same h from every time with the same time to
+    expiry (`bucket_hours` buckets), so the gap's normal widening into expiry is not counted. The reading that
+    selects the dislocation (at s) is not part of the change, and the delay lets short-lived measurement noise fade,
+    so noise cannot produce the reversion by itself. Intervals: 95%, resampling whole weeklies.
+    Returns x, threshold, series (Kalshi / Deribit / gap), minutes (h), change (vol points), lo, hi, n.
+    """
+    d = pd.Timedelta(minutes=delay_min)
+    idx = p.set_index(["event_ticker", "ts"])
+    ev, ts = p.event_ticker.to_numpy(), p.ts
+    start = ts + d
+    gap_sel = p.gap.to_numpy()                                      # the dislocation, seen at s = ts
+    tau_h = _at(idx.tau_years, ev, start) * 8760
+    bucket = np.floor(tau_h / bucket_hours)
+    codes, events = pd.factorize(ev)
+    rng = np.random.default_rng(seed)
+    boot = np.stack([np.bincount(rng.integers(0, len(events), len(events)), minlength=len(events)) for _ in range(n_boot)])
+    rows = []
+    for h in horizons:
+        end = start + pd.Timedelta(minutes=h)
+        for name, col in (("Kalshi", "K"), ("Deribit", "D"), ("gap", "gap")):
+            s = idx[col]
+            raw = _at(s, ev, end) - _at(s, ev, start)
+            ok_all = np.isfinite(raw) & np.isfinite(bucket)
+            base = pd.Series(raw[ok_all]).groupby(bucket[ok_all]).mean()
+            excess = raw - pd.Series(bucket).map(base).to_numpy()
+            for x in xs:
+                ok = (gap_sel > x + normal) & np.isfinite(excess)
+                s1 = np.bincount(codes[ok], excess[ok], len(events))
+                s0 = np.bincount(codes[ok], minlength=len(events)).astype(float)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    bs = (boot @ s1) / (boot @ s0)
+                rows.append({"x": x, "threshold": x + normal, "series": name, "minutes": h,
+                             "change": s1.sum() / s0.sum() if s0.sum() else np.nan,
+                             "lo": float(np.nanpercentile(bs, 2.5)), "hi": float(np.nanpercentile(bs, 97.5)),
+                             "n": int(ok.sum())})
+    return pd.DataFrame(rows)

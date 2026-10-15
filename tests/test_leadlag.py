@@ -40,3 +40,32 @@ def test_longer_changes_and_week_intervals():
     assert row.ci_low <= row["corr"] <= row.ci_high
     u = r[r.x.isna()].set_index("lag")["corr"]
     assert u.idxmax() == 20                   # Kalshi still leads by 20 minutes
+
+
+def _gap_panel(gaps):
+    """One weekly per gap path; Kalshi carries the gap, Deribit is flat at 40."""
+    frames = []
+    for e, g in enumerate(gaps):
+        ts = pd.date_range("2026-03-02", periods=len(g), freq="10min", tz="UTC")
+        frames.append(pd.DataFrame({"event_ticker": f"E{e}", "ts": ts, "tau_years": 7 / 365,
+                                    "K": 40 + g, "D": 40.0, "gap": g}))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_after_dislocation_finds_mean_reversion_and_not_without_it():
+    rng = np.random.default_rng(1)
+    n = 3000
+    ar = []
+    for _ in range(8):                         # the gap mean-reverts (AR(1) around 0): it closes over time
+        g = np.zeros(n)
+        for i in range(1, n):
+            g[i] = 0.97 * g[i - 1] + rng.normal(0, 1)
+        ar.append(g)
+    r = leadlag.after_dislocation(_gap_panel(ar), xs=[4], normal=0, delay_min=30, horizons=[120], n_boot=100)
+    gap = r[r.series == "gap"].iloc[0]
+    assert gap.change < -1 and gap.hi < 0
+    assert abs(r[r.series == "Deribit"].iloc[0].change) < 1e-9
+    walks = [rng.normal(0, 1, n).cumsum() for _ in range(8)]    # a random-walk gap does not close
+    w = leadlag.after_dislocation(_gap_panel(walks), xs=[4], normal=0, delay_min=30, horizons=[120], n_boot=100)
+    wg = w[w.series == "gap"].iloc[0]
+    assert wg.lo < 0 < wg.hi

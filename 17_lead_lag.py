@@ -226,6 +226,90 @@ def _(H, INK2, MUTED, W, alt, leadlag, mo, pd, xc):
 
 
 @app.cell
+def _(H, INK2, MUTED, W, alt, leadlag, mo, np, panel, pd):
+    # Event study: after the gap is seen above X + 1.8, the gap and each leg from 30 minutes later (when a trader
+    # could act) over the next 4 hours, relative to the normal drift at the same time to expiry
+    DELAY = 30
+    ev = leadlag.after_dislocation(panel, delay_min=DELAY)
+    _zero = pd.DataFrame([{"x": x, "series": s, "minutes": 0, "change": 0.0, "lo": 0.0, "hi": 0.0}
+                          for x in ev.x.unique() for s in ev.series.unique()])
+    _e = pd.concat([_zero, ev], ignore_index=True).assign(hours=lambda d: d.minutes / 60)
+    _lbl = {0: "1.8+ points (X = 0)", 2: "3.8+ points (X = +2)", 4: "5.8+ points (X = +4)", 6: "7.8+ points (X = +6)"}
+    _e["dislocation"] = _e.x.map(_lbl)
+    _dom = list(_lbl.values())
+    _blues = alt.Scale(domain=_dom, range=["#9ec5f4", "#5598e7", "#256abf", "#0d366b"])   # ordered: light = small gap
+    _x = alt.X("hours:Q", title="hours after acting (30 minutes after the dislocation is seen)",
+               scale=alt.Scale(domain=[0, 4], nice=False), axis=alt.Axis(values=[0, 1, 2, 3, 4]))
+    _g = _e[_e.series == "gap"]
+    _end = _g[_g.minutes == _g.minutes.max()]
+    gap_path_chart = (
+        alt.Chart(_g).mark_area(opacity=0.12).encode(x=_x, y="lo:Q", y2="hi:Q", color=alt.Color("dislocation:N", scale=_blues, legend=None))
+        + alt.Chart(_g).mark_line(strokeWidth=3).encode(
+            x=_x, y=alt.Y("change:Q", title="change in Kalshi − Deribit beyond normal drift (vol points)"),
+            color=alt.Color("dislocation:N", scale=_blues, legend=None),
+            tooltip=["dislocation:N", alt.Tooltip("hours:Q", format=".2f"), alt.Tooltip("change:Q", format="+.2f"),
+                     alt.Tooltip("lo:Q", title="95% low", format="+.2f"), alt.Tooltip("hi:Q", title="95% high", format="+.2f"),
+                     alt.Tooltip("n:Q", format=",")])
+        + alt.Chart(_end).mark_text(align="left", dx=6, fontSize=12, fontWeight="bold").encode(
+            x=_x, y="change:Q", text="dislocation:N", color=alt.Color("dislocation:N", scale=_blues, legend=None))
+        + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
+    ).properties(width=W - 130, height=H + 40, padding={"right": 150}, title=alt.TitleParams(
+        "After a dislocation, the gap closes, and the bigger the gap the more it closes",
+        subtitle="Lines: how far Kalshi was above Deribit when seen (Kalshi's usual premium is 1.8). Shaded: 95% interval, resampling weeks."))
+
+    _l = _e[(_e.series != "gap") & (_e.x == 4)]
+    _legs = alt.Scale(domain=["Kalshi", "Deribit"], range=["#2a78d6", "#eb6834"])
+    _lend = _l[_l.minutes == _l.minutes.max()].assign(t=lambda d: d.series + " " + d.change.map("{:+.1f}".format))
+    legs_chart = (
+        alt.Chart(_l).mark_area(opacity=0.15).encode(x=_x, y="lo:Q", y2="hi:Q", color=alt.Color("series:N", scale=_legs, legend=None))
+        + alt.Chart(_l).mark_line(strokeWidth=3).encode(
+            x=_x, y=alt.Y("change:Q", title="change in ATM vol beyond normal drift (vol points)"),
+            color=alt.Color("series:N", scale=_legs, legend=None),
+            tooltip=["series:N", alt.Tooltip("hours:Q", format=".2f"), alt.Tooltip("change:Q", format="+.2f"),
+                     alt.Tooltip("lo:Q", title="95% low", format="+.2f"), alt.Tooltip("hi:Q", title="95% high", format="+.2f")])
+        + alt.Chart(_lend).mark_text(align="left", dx=6, fontSize=13, fontWeight="bold").encode(
+            x=_x, y="change:Q", text="t:N", color=alt.Color("series:N", scale=_legs, legend=None))
+        + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
+    ).properties(width=W - 130, height=H + 40, padding={"right": 110}, title=alt.TitleParams(
+        "Both legs close it: Kalshi falls and Deribit rises",
+        subtitle="Kalshi 5.8+ points above Deribit when seen (X = +4). Shaded: 95% interval, resampling weeks."))
+
+    _at4 = lambda s, x, m: ev[(ev.series == s) & (ev.x == x) & (ev.minutes == m)].iloc[0]
+    _g6, _g4, _g2 = _at4("gap", 6, 240), _at4("gap", 4, 240), _at4("gap", 2, 240)
+    _k4, _d4 = _at4("Kalshi", 4, 240), _at4("Deribit", 4, 240)
+    _g4_2h = _at4("gap", 4, 120)
+    _k4_2h, _d4_2h = _at4("Kalshi", 4, 120), _at4("Deribit", 4, 120)
+    mo.vstack([
+        mo.md(f"""
+        ## After a dislocation: the gap closes
+
+        This is the evidence for the dislocation trade. Correlations of changes (above) show whether the markets move
+        *together*; the trade needs the gap to *shrink*. So: when Kalshi is unusually far above Deribit, what happens
+        next? Changes are measured from {DELAY} minutes after the dislocation is seen (time to act, and for short-lived
+        measurement noise to fade; the reading that flags the dislocation is never part of the change), and against
+        the normal change at the same time to expiry, so the gap's usual widening into expiry does not count.
+
+        - **The gap closes.** Over the next 4 hours it narrows by **{-_g2.change:.1f}** points after a 3.8+ point gap,
+          **{-_g4.change:.1f}** after 5.8+ ({-_g4_2h.change:.1f} within 2 hours) and **{-_g6.change:.1f}** after 7.8+;
+          every 95% interval is below zero.
+        - **Both legs move.** After a 5.8+ point gap, within 2 hours Kalshi's vol falls **{-_k4_2h.change:.2f}** points
+          (95% interval {_k4_2h.lo:+.2f} to {_k4_2h.hi:+.2f}) and Deribit's rises **{_d4_2h.change:.2f}**
+          ({_d4_2h.lo:+.2f} to {_d4_2h.hi:+.2f}): the convergence is shared, not Deribit catching up alone. By 4 hours
+          ({_k4.change:+.1f} and {_d4.change:+.1f}) each leg's own interval is wide enough to touch zero, while the gap's
+          stays well below it.
+        - **It is slow.** The closing builds over hours, while within the hour the two markets move largely
+          independently (the decoupling above), so the trade earns from mean reversion, not from one market copying
+          the other.
+        - **It is small next to costs.** A 1–2 point convergence is worth well under 1¢ on a $1 Kalshi contract near
+          the money, against a quoted spread of 1–2¢ and a fee of up to 1.75¢; the trade needs maker fills (`12`).
+        """),
+        gap_path_chart,
+        legs_chart,
+    ])
+    return ev, gap_path_chart, legs_chart
+
+
+@app.cell
 def _(H, MUTED, W, alt, leadlag, mo, panel, pd):
     # Check, on 10-minute changes where it is clearest: why the gap is measured before every change in the window.
     # Measured at the start of Kalshi's change instead, it shares its time stamp with the end of Deribit's change at
@@ -263,13 +347,14 @@ def _(H, MUTED, W, alt, leadlag, mo, panel, pd):
 
 
 @app.cell
-def _(ROOT, check_chart, heat_chart, lines_chart, mo, n_chart):
+def _(ROOT, check_chart, gap_path_chart, heat_chart, legs_chart, lines_chart, mo, n_chart):
     # Save the figures when run as a script (python 17_lead_lag.py); opening the notebook writes nothing
     if not mo.running_in_notebook():
         _out = ROOT / "outputs" / "figures"
         _out.mkdir(parents=True, exist_ok=True)
         for _name, _chart in [("17_leadlag_heatmap", heat_chart), ("17_leadlag_lines", lines_chart),
-                              ("17_leadlag_observations", n_chart), ("17_leadlag_timing_check", check_chart)]:
+                              ("17_leadlag_observations", n_chart), ("17_leadlag_timing_check", check_chart),
+                              ("17_after_dislocation_gap", gap_path_chart), ("17_after_dislocation_legs", legs_chart)]:
             _chart.save(_out / f"{_name}.png", scale_factor=2)
     return
 

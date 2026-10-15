@@ -415,16 +415,16 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
     surface_both = _fig([_surface("kalshi", "Kalshi", _blues, 0.95, False),
                          _surface("deribit", "Deribit (stretched)", _oranges, 0.7, False)],
                         "Kalshi (blue) and Deribit (orange) on the same axes")
-    # The spread surface: strikes within ±2 standard deviations of the money only
-    _gsurf = surf[surf.sd.abs() <= 2]
-    _sd2 = [s for s in _sd if abs(s) <= 2]
+    # The spread surface: strikes within ±1 standard deviation of the money only
+    _gsurf = surf[surf.sd.abs() <= 1]
+    _sd2 = [s for s in _sd if abs(s) <= 1]
     _gmax = float(_gsurf.gap.abs().quantile(0.95))
     surface_gap = _fig([go.Surface(x=_sd2, y=_days, z=_gsurf.pivot(index="days", columns="sd", values="gap")
                                    .reindex(index=_days, columns=_sd2).to_numpy(),
                                    colorscale=[[0, "#c4501f"], [0.5, "#f0efec"], [1, "#1f5fae"]], cmin=-_gmax, cmax=_gmax,
                                    colorbar=dict(title="points"),
                                    hovertemplate="%{x:+.1f} SD<br>%{y} days left<br>Kalshi − Deribit %{z:+.1f} points<extra></extra>")],
-                       "Spread surface: Kalshi − Deribit, vol points, ±2 SD (blue: Kalshi higher; orange: Deribit higher)",
+                       "Spread surface: Kalshi − Deribit, vol points, ±1 SD (blue: Kalshi higher; orange: Deribit higher)",
                        zaxis=dict(title="Kalshi − Deribit (points)", tickformat="+.0f"))
 
     # Flat versions for a static slide
@@ -456,7 +456,7 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
         + _gb.mark_text(fontSize=11).encode(text=alt.Text("gap:Q", format="+.1f"), color=alt.condition(
             f"abs(datum.gap) > {_gmax * 0.6:.2f}", alt.value("white"), alt.value("#0b0b0b")))
     ).properties(width=W, height=260, title=alt.TitleParams(
-        "Spread surface: Kalshi − Deribit (stretched), vol points, within ±2 standard deviations",
+        "Spread surface: Kalshi − Deribit (stretched), vol points, within ±1 standard deviation",
         subtitle="Blue: Kalshi higher; orange: Deribit higher. Median of the strike-snapshots' own spreads per cell."))
     mo.vstack([
         mo.md("""

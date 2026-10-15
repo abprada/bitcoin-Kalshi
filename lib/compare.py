@@ -97,12 +97,14 @@ def build_comparison(root: Path, window_min: int = WINDOW_MIN, min_deribit_strik
     times to expiry, stretch ratio), `snaps` (the Kalshi snapshots considered), `trades` (the Deribit trades used),
     `hour_profile`.
     """
-    data, clean, derived = root / "data", root / "data" / "clean", root / "data" / "derived"
+    clean, derived = root / "data" / "clean", root / "data" / "derived"
 
-    # Deribit: afternoon trades in Friday expiries (the only ones whose date matches a Kalshi weekly)
-    trades = deribit.load_trades(data / "deribit_btc_options.csv.gz")
-    trades = trades[(trades.window == "us_afternoon") & (trades.expiry.dt.dayofweek == 4)
-                    & trades.iv_mark.notna() & (trades.tau_years > 0)]
+    # Deribit: trades in Friday expiries (the only ones whose date matches a Kalshi weekly); from the full file every
+    # trade near a snapshot counts, from the collaborator's CSV only its afternoon window
+    path = deribit.trades_path(root)
+    trades = deribit.load_trades(path, expiry_weekday=4)
+    trades = trades[trades.iv_mark.notna() & (trades.tau_years > 0)
+                    & ((trades.window == "us_afternoon") | deribit.is_full(path))]
     by_expiry = {e: g for e, g in trades.groupby("expiry")}
 
     # Kalshi: usable snapshots in the same window, before the Deribit option with the same date expires

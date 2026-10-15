@@ -82,20 +82,22 @@ def _(cleaning, cs, mo, np, pd):
 
     table_2026 = summarize("2026")
     table_q4 = summarize("2025Q4")
+    table_pre = summarize("pre2026")
     base = table_2026.set_index("variant").loc["base"]
     best = table_2026.sort_values("net $/day", ascending=False).iloc[0]
     best_gross = table_2026.sort_values("gross $/day", ascending=False).iloc[0]
     return (D, END, FIG, JUMPS, START, base, best, best_gross, daily_all, day_rv, half_spreads, panel,
-            table_2026, table_q4, term, trades)
+            table_2026, table_pre, table_q4, term, trades)
 
 
 @app.cell(hide_code=True)
-def _(base, best, best_gross, mo, table_2026):
+def _(base, best, best_gross, daily_all, mo, table_2026):
     _n_pos = int((table_2026["net $/day"] > 0).sum())
+    _days = int(((daily_all.period == "2026") & (daily_all.variant == "base")).sum())
     mo.md(f"""
     # 10 · Deribit calendar straddle: long the week, short the day
 
-    *A rules-based version of the trade, on Deribit data, 15 January – 30 September 2026 (259 days). Built by
+    *A rules-based version of the trade, on Deribit data, 15 January – 30 September 2026 ({_days} days). Built by
     `08_strategy_data.py` (`lib/calendar_straddle.py`); this notebook only reads its results.*
 
     **The trade.** Every day at 08:00 UTC, buy one at-the-money straddle on the Deribit expiry about 7 days out and
@@ -136,7 +138,7 @@ def _(mo):
 
     | | |
     |---|---|
-    | **Deribit options** | Every BTC option trade from Deribit's public history API (`00_fetch_deribit.py`), October 2025 – September 2026, expiries up to 15 days: 2.7 million trades, about 13× the collaborator's file, which kept only 07:00–08:00 and 19:30–22:30 UTC. All 200,000 of the collaborator's trades in these expiries are in it, with identical marks and vols |
+    | **Deribit options** | Every BTC option trade from Deribit's public history API (`00_fetch_deribit.py`, or `00_fetch_deribit_all.py` cut to the same expiries), expiries up to 15 days: 2.7 million trades in October 2025 – September 2026, about 13× the collaborator's file, which kept only 07:00–08:00 and 19:30–22:30 UTC; 5.6 million from 15 November 2024, the start of our Kalshi data, for the longer check. All 200,000 of the collaborator's trades in these expiries are in it, with identical marks and vols |
     | **Option values** | Each trade carries Deribit's mark price and mark vol. Per expiry and hour, the trades within ±30 minutes give Deribit's smile (a quadratic in log-moneyness per root year, at least 3 strikes around the forward); its forward comes from inverting the mark price at the mark vol. Any option is then valued by Black-Scholes at its fitted vol (`lib/deribit_marks.py`). An hour without trades in an expiry reuses its last fit (at most 3 hours old) with the current index |
     | **Hedge** | BTC-PERPETUAL 1-minute prices, hourly funding (Deribit API). Black-Scholes deltas at the fitted vols |
     | **Settlement** | Deribit's delivery price (its 30-minute index average before 08:00 UTC); Oct–Nov 2025 rebuilt from the index on trades |
@@ -272,7 +274,7 @@ def _(END, FIG, H, SLOT1, SLOT2, SLOT3, START, W, alt, base, daily_all, mo, pd):
 
         Sharpe (daily, ×√365): {base['gross Sharpe']:.1f} gross, {base['net Sharpe']:.1f} net. Worst day
         {base['worst day $']:+,.0f} $ ({base['worst day']}); maximum drawdown {base['max drawdown $']:+,.0f} $ over
-        the 259 days. The options and the hedge offset each other as they should (the book is short gamma: the
+        the {len(_b)} days. The options and the hedge offset each other as they should (the book is short gamma: the
         options lose when BTC moves and the hedge earns some of it back); what is left is close to zero before
         costs, and the costs are about ten times larger.
         """),
@@ -333,11 +335,13 @@ def _(daily_all, mo, pd):
 
 
 @app.cell(hide_code=True)
-def _(mo, table_2026, table_q4):
+def _(daily_all, mo, table_2026, table_pre, table_q4):
     _cols = ["variant", "what", "gross $/day", "gross Sharpe", "option costs $/day", "hedge costs $/day", "net $/day",
              "net Sharpe", "worst day $", "max drawdown $", "share of days up", "early Feb (2–8)", "early Jun (1–7)",
              "late Aug (20–31)"]
     _fmt = lambda d: d[_cols].round(2)
+    _pre = table_pre.set_index("variant").stack()      # (variant, column) -> value
+    _pre_days = int(((daily_all.period == "pre2026") & (daily_all.variant == "base")).sum())
     mo.vstack([
         mo.md("""
         ## 4 · Variations: what changes the answer, and what does not
@@ -362,6 +366,15 @@ def _(mo, table_2026, table_q4):
         negative after.
         """),
         mo.ui.table(_fmt(table_q4), selection=None, show_download=True, pagination=False),
+        mo.md(f"""
+        **16 November 2024 – 14 January 2026, the longest check the data allow** ({_pre_days} days, every Deribit
+        trade from the full-day fetch; it contains the Q4 2025 check above). The same picture again: the base case
+        is {_pre['base', 'gross $/day']:+.0f} $ a day before costs and {_pre['base', 'net $/day']:+,.0f} after;
+        the overnight short is the one positive gross, {_pre['overnight_expiry', 'gross $/day']:+.0f} $ a day
+        (Sharpe {_pre['overnight_expiry', 'gross Sharpe']:.1f}), and {_pre['overnight_expiry', 'net $/day']:+.0f}
+        after costs; the long straddle alone is {_pre['long_only', 'gross $/day']:+.0f} $ a day before costs.
+        """),
+        mo.ui.table(_fmt(table_pre), selection=None, show_download=True, pagination=False),
     ])
     return
 
@@ -389,7 +402,8 @@ def _(mo):
     - Inverse (BTC-margined) contracts are valued in dollars, as elsewhere in the project; the BTC-collateral effect
       and margin are not modelled (the plan's section 3), nor are jump-diffusion models or liquidity in stressed
       markets beyond what the trades show.
-    - One sample: January–September 2026, with three stress episodes. Oct–Dec 2025 is used as a check.
+    - One sample: January–September 2026, with three stress episodes. Oct 2025 – mid-January 2026, and the longer
+      Nov 2024 – mid-January 2026, are used as checks.
     """)
     return
 

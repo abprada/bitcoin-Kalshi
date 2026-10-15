@@ -122,7 +122,7 @@ def _(kalshi_weeks, mo, pd, stats):
         ("Kalshi", "Weekly BTC contracts (KXBTCD): '$1 if BTC > K at 5pm ET Friday'",
          f"{kalshi_weeks} weeks, Oct 2025 – Sep 2026, ~54 strikes $500 apart, 1-minute bid/ask"),
         ("Deribit", "BTC options (calls and puts), all expiring 08:00 UTC",
-         f"{stats['deribit_trades']:,} trades in Friday expiries, 19:30–22:29 UTC, Jan – Sep 2026, with Deribit's mark price"),
+         f"{stats['deribit_trades']:,} trades in Friday expiries, all day, Nov 2024 – Sep 2026, with Deribit's mark price"),
         ("Bitcoin price", "Coinbase and Bitstamp, average", "every minute; within 0.015% of Kalshi's settlement index"),
         ("Pairs", "every Deribit trade with Kalshi's vol at the same strike, at most 30 seconds apart",
          f"{stats['pairs']:,} pairs on {stats['pair_days']} days ({stats['pair_weeklies']} weeks)"),
@@ -144,7 +144,7 @@ def _(mo, stats):
     each contract directly is too noisy near the current price and biased low by the smile, so it is not used.)
 
     **Step 2. Line Kalshi up with Deribit.** Kalshi quotes every strike every minute; our Deribit data are individual
-    trades, 19:30–22:29 UTC, at whatever strikes people trade. Three mismatches, each handled:
+    trades, at any hour, at whatever strikes people trade. Three mismatches, each handled:
 
     | Mismatch | Fix |
     |---|---|

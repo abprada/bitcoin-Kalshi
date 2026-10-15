@@ -18,17 +18,35 @@ IV_VALID_PCT = (0.0, 500.0)   # Deribit's iv column uses 0 and 999 as placeholde
 ATM_BAND = 0.01               # |ln(K / index)| below this counts as at the money
 
 
-def load_trades(path: Path) -> pd.DataFrame:
+FULL_TRADES = Path("data") / "raw" / "deribit_trades" / "btc_options_trades.parquet"   # 00_fetch_deribit_all.py
+COLLAB_TRADES = Path("data") / "deribit_btc_options.csv.gz"                              # two windows a day
+
+
+def trades_path(root: Path) -> Path:
+    """Every Deribit trade (00_fetch_deribit_all.py) when fetched, else the collaborator's two-window CSV."""
+    full = Path(root) / FULL_TRADES
+    return full if full.exists() else Path(root) / COLLAB_TRADES
+
+
+def is_full(path: Path) -> bool:
+    """True for the all-day file, False for the collaborator's CSV (07:00-08:00 and 19:30-22:30 UTC only)."""
+    return Path(path).suffix == ".parquet"
+
+
+def load_trades(path: Path, expiry_weekday: int | None = None) -> pd.DataFrame:
     """Read the trades (the collaborator's CSV, or 00_fetch_deribit_all.py's parquet with every trade) and add time to
-    expiry, moneyness, decimal vols and flags.
+    expiry, moneyness, decimal vols and flags. `expiry_weekday` (0 = Monday) keeps only expiries on that weekday,
+    before the per-trade vol inversion, which is most of the time on the full file.
 
     Added columns: `ts`, `expiry` (UTC), `tau_years`, `log_moneyness` = ln(K / index), `iv_deribit` (decimal,
     NaN for placeholders), `iv_mark` (our Black-Scholes inversion of the mark price, forward = index),
     `iv_valid`, `exact_dup` (True for every repeat of an identical earlier row).
     """
     d = pd.read_parquet(path) if Path(path).suffix == ".parquet" else pd.read_csv(path)
-    d["ts"] = pd.to_datetime(d.time_utc, format="ISO8601", utc=True)
     d["expiry"] = pd.to_datetime(d.expiry_utc, utc=True)
+    if expiry_weekday is not None:
+        d = d[d.expiry.dt.dayofweek == expiry_weekday].reset_index(drop=True)
+    d["ts"] = pd.to_datetime(d.time_utc, format="ISO8601", utc=True)
     d["tau_years"] = (d.expiry - d.ts).dt.total_seconds() / YEAR_SECONDS
     d["log_moneyness"] = np.log(d.strike / d.index_price)
     d["iv_valid"] = (d.iv > IV_VALID_PCT[0]) & (d.iv < IV_VALID_PCT[1])

@@ -10,7 +10,9 @@ lib/iv.py, 05's hour-of-week profile via lib/deribit.py, 02's cleaning rules via
 4. Strategy 1 (Kalshi vs Deribit vol spread) trades for several holding periods and two signals.
 5. Strategy 2 (Deribit calendar straddle) daily P&L for the base case and its variations.
 
-Needs data/raw/deribit (00_fetch_deribit.py) and data/raw/btc_spot (00_fetch_spot.py).
+Needs data/raw/deribit (00_fetch_deribit.py; with --no-options when the options come from 00_fetch_deribit_all.py,
+which `deribit_marks.load_options` then reads), data/raw/btc_spot (00_fetch_spot.py) and, for the hedging case,
+data/raw/kalshi_events (00_fetch_kalshi_event.py KXBTCD-25OCT0917).
 Writes data/derived/strategies/ (not in git). About 25 minutes.
   python 08_strategy_data.py                  # everything
   python 08_strategy_data.py --only calendar  # one step: inputs, volspread, calendar
@@ -310,7 +312,11 @@ def step_volspread(mkt):
 def step_calendar(mkt):
     t0 = time.time()
     daily, trades = [], []
-    for period, (start, end) in {"2026": ("2026-01-15", "2026-10-01"), "2025Q4": ("2025-10-02", "2026-01-15")}.items():
+    # 2026 is the main sample; the earlier periods are out-of-sample checks ("pre2026": all Deribit data before it,
+    # from the day after the first fetched day, so the long leg has a smile to enter on)
+    periods = {"2026": ("2026-01-15", "2026-10-01"), "2025Q4": ("2025-10-02", "2026-01-15"),
+               "pre2026": ("2024-11-16", "2026-01-15")}
+    for period, (start, end) in periods.items():
         for name, (desc, kw) in CALENDAR_VARIANTS.items():
             if period != "2026" and name not in ("base", "gross", "best_practical", "short_only", "long_only", "short_only_expiry", "overnight_expiry"):
                 continue
@@ -333,8 +339,6 @@ def main(argv=None):
     OUT.mkdir(parents=True, exist_ok=True)
     if args.only in (None, "inputs"):
         step_inputs()
-    if args.only in (None, "hedge"):
-        step_hedge()
     if args.only == "hedge_day":
         step_hedge(cross=False)
     if args.only in (None, "volspread", "calendar", "dislocation", "ab"):
@@ -347,6 +351,8 @@ def main(argv=None):
             step_volspread(mkt)
         if args.only in (None, "calendar"):
             step_calendar(mkt)
+    if args.only in (None, "hedge"):    # last: reads disl_panel.parquet, written by step_dislocation
+        step_hedge()
 
 
 if __name__ == "__main__":

@@ -24,23 +24,25 @@ def _(mo):
     Context for the dislocation trade. When Kalshi's vol is unusually far above Deribit's, does one market's move
     show up in the other's a few minutes later?
 
-    **The measure.** Every 10 minutes, the change in each market's at-the-money implied vol: dK(t) for Kalshi's
-    weekly, dD(t) for Deribit's Friday expiry with the same date. Then the correlation between dK(t) and
-    dD(t + k), for k from −60 to +60 minutes in 10-minute steps (`lib/leadlag.py`).
+    **The measure.** The change in each market's at-the-money implied vol over a window of h minutes (60 by default;
+    30 and 10 in the selector below), sampled every 10 minutes: dK(t) for Kalshi's weekly, dD(t) for Deribit's Friday
+    expiry with the same date. Then the correlation between dK(t) and dD(t + k), for k from −60 to +60 minutes in
+    10-minute steps (`lib/leadlag.py`).
 
     - **k > 0**: Deribit's change comes *after* Kalshi's. A peak here means **Kalshi moves first**.
     - **k < 0**: Deribit's change comes first. A peak here means **Deribit moves first**.
-    - **k = 0**: both change in the same 10 minutes.
+    - **k = 0**: both change over the same window.
 
     **The condition.** Only times when the gap, Kalshi − Deribit in vol points, is above **X + 1.8** (1.8 points is
     Kalshi's usual premium), for X from −6 to +6. X = 0 keeps the times Kalshi is richer than usual; X = +4 keeps
-    those where it is 4 points richer than usual. The gap is measured **80 minutes before t**, before every change in
-    the window, so selecting on it cannot select on the changes being correlated (the check at the end shows why
-    this matters).
+    those where it is 4 points richer than usual. The gap is measured **before every change in the window** (60 + h
+    + 10 minutes before t), so selecting on it cannot select on the changes being correlated (the check at the end
+    shows why this matters).
 
-    **How each vol is measured.** Kalshi: its smile every 10 minutes from the 1-minute quotes, as in `03`. Deribit: its
-    smile fitted to the trades in the 10 minutes *before* each time, so it never uses trades from the future, and
-    stretched to Kalshi's 5pm ET expiry as in `05`/`16`.
+    **How each vol is measured.** Kalshi: its smile every 10 minutes from the 1-minute quotes, as in `03`. Deribit:
+    every trade in the 10 minutes *before* each time (so it never uses trades from the future), each trade's mark vol
+    turned into an ATM estimate with the previous hour's smile shape, median taken; stretched to Kalshi's 5pm ET expiry
+    as in `05`/`16`.
 
     It writes nothing when opened; run as a script it saves its figures to `outputs/figures/` (prefixed `17_`).
     """)
@@ -78,7 +80,6 @@ def _(leadlag, mo, pairs):
     ROOT = mo.notebook_dir()
     _hp = pairs.cached_pairs(ROOT)["hour_profile"]
     panel = leadlag.cached_panel(ROOT, _hp)
-    xc = leadlag.conditional_xcorr(panel)
     _live = panel.ts < panel.deribit_expiry
     _both = panel.K.notna() & panel.D.notna()
     mo.md(f"""
@@ -86,15 +87,47 @@ def _(leadlag, mo, pairs):
 
     **{len(panel):,}** usable Kalshi snapshots every 10 minutes in **{panel.event_ticker.nunique()}** weeklies
     ({panel.ts.min():%b %Y} – {panel.ts.max():%b %Y}). {_live.sum():,} fall before Deribit's Friday 08:00 expiry, and
-    **{_both.sum() / _live.sum():.0%}** of those have a Deribit smile from the previous 10 minutes of trades (a median
-    of {panel.n_trades.median():.0f} trades). The gap averages **{panel.gap.mean():+.1f}** points (median
+    **{_both.sum() / _live.sum():.0%}** of those have a Deribit ATM estimate from the previous 10 minutes of trades (a
+    median of {panel.n_trades.median():.0f} trades). The gap averages **{panel.gap.mean():+.1f}** points (median
     {panel.gap.median():+.1f}), against the 1.8 used as "usual".
     """)
-    return ROOT, panel, xc
+    return ROOT, panel
 
 
 @app.cell
-def _(H, INK2, W, alt, leadlag, mo, pd, xc):
+def _(mo):
+    horizon = mo.ui.dropdown({"60 minutes": 60, "30 minutes": 30, "10 minutes": 10}, value="60 minutes",
+                             label="Change window h")
+    return (horizon,)
+
+
+@app.cell
+def _(horizon, leadlag, mo, panel, pd):
+    H_MIN = horizon.value
+    xc = leadlag.conditional_xcorr(panel, change_min=H_MIN)
+    # Why the window matters: 10-minute changes are mostly measurement noise, longer ones carry the common moves
+    _rows = []
+    for _h in (10, 30, 60, 120, 240):
+        _r = leadlag.conditional_xcorr(panel, lags=[0], xs=[], change_min=_h, n_boot=50).iloc[0]
+        _rows.append({"change window": f"{_h} min", "same-time correlation": round(_r["corr"], 2), "observations": f"{_r.n:,}"})
+    mo.vstack([
+        mo.md(f"""
+        ## The change window
+
+        Ten-minute changes in implied vol are mostly measurement noise: Kalshi's quotes move in 1¢ ticks and go stale, and
+        Deribit's estimate rests on a handful of trades, so each market's own 10-minute changes partly reverse the next
+        10 minutes. Noise in two markets does not correlate, while real moves add up over time, so the same-time
+        correlation rises with the window (below). The lead-lag uses **{H_MIN}-minute** changes, still sliding k in
+        10-minute steps; neighbouring observations then overlap, so the 95% intervals resample whole weeklies.
+        """),
+        horizon,
+        mo.ui.table(pd.DataFrame(_rows), selection=None, show_download=False, pagination=False),
+    ])
+    return H_MIN, xc
+
+
+@app.cell
+def _(H, H_MIN, INK2, W, alt, leadlag, mo, pd, xc):
     # Heatmap: correlation by lag (columns) and threshold X (rows); thin cells empty
     _c = xc[xc.x.notna() & (xc.n >= leadlag.MIN_N)].copy()
     _c["X"] = _c.x.astype(int).map(lambda v: f"{v:+d}" if v else "0")
@@ -114,25 +147,31 @@ def _(H, INK2, W, alt, leadlag, mo, pd, xc):
         + _base.mark_text(fontSize=10).encode(text=alt.Text("corr:Q", format="+.2f"), color=alt.condition(
             f"abs(datum.corr) > {_lim * 0.6:.3f}", alt.value("white"), alt.value("#0b0b0b")))
     ).properties(width=W, height=H + 80, title=alt.TitleParams(
-        "Correlation of Kalshi's 10-minute vol change with Deribit's k minutes later",
+        f"Correlation of Kalshi's {H_MIN}-minute vol change with Deribit's, k minutes later",
         subtitle=f"Rows: only times Kalshi − Deribit is above X + 1.8 points; empty cells have fewer than {leadlag.MIN_N} observations."))
 
     _u = xc[xc.x.isna()].set_index("lag")
     _z = xc[(xc.lag == 0) & xc.x.notna()].set_index("x")["corr"]
-    _n4 = int(xc[(xc.lag == 0) & (xc.x == 4)].n.iloc[0])
+    _c6 = xc[(xc.lag == 0) & (xc.x == 6)].iloc[0]
+    _u0 = xc[(xc.lag == 0) & xc.x.isna()].iloc[0]
+    _x6 = xc[xc.x == 6].set_index("lag")["corr"]
+    _l6, _r6 = _x6[_x6.index < 0].mean(), _x6[_x6.index > 0].mean()
     mo.vstack([
         mo.md(f"""
         ## Who moves first
 
         **Unconditionally** (all times), the correlation peaks at **k = {(lambda v: f"{v:+d}" if v else "0")(int(_u["corr"].idxmax()))} minutes**
-        ({_u["corr"].max():+.2f}): the two markets mostly move in the same 10 minutes, with a little more at +10
-        (Kalshi first, {_u["corr"].loc[10]:+.2f}) than at −10 (Deribit first, {_u["corr"].loc[-10]:+.2f}).
+        ({_u["corr"].max():+.2f}, against {_u["corr"].loc[0]:+.2f} at k = 0), and the profile is close to symmetric: {_u["corr"].loc[10]:+.2f} at +10 (Kalshi first)
+        against {_u["corr"].loc[-10]:+.2f} at −10 (Deribit first), {_u["corr"].loc[30]:+.2f} against
+        {_u["corr"].loc[-30]:+.2f} at ±30. Neither market leads: they mostly move together.
 
-        **When Kalshi is rich, the two decouple.** The same-10-minute correlation falls from {_u["corr"].loc[0]:+.2f}
-        (all times) to {_z.loc[0]:+.2f} at X = 0, {_z.loc[2]:+.2f} at X = +2 and {_z.loc[4]:+.2f} at X = +4. No lag picks up
-        what the contemporaneous correlation loses: neither market reliably follows the other within an hour, so a
-        dislocation is not closed by one market catching up with the other's moves. At high thresholds the cells rest on
-        a few thousand changes (95% band about ±{1.96 / _n4 ** 0.5:.2f} at X = +4), so single cells are not significant.
+        **When Kalshi is rich, the two decouple.** The same-time correlation is {_u["corr"].loc[0]:+.2f} at all times,
+        {_z.loc[0]:+.2f} at X = 0, {_z.loc[2]:+.2f} at X = +2, **{_z.loc[4]:+.2f}** at X = +4 and **{_z.loc[6]:+.2f}** at
+        X = +6 (95% interval {_c6.ci_low:+.2f} to {_c6.ci_high:+.2f}, against {_u0.ci_low:+.2f} to {_u0.ci_high:+.2f} at all
+        times). The profile flattens rather than shifting to one side: in a large dislocation the two markets' vols move
+        largely independently, so the gap is not closed by one market quickly copying the other.
+        At X = +6 the Deribit-first side averages {_l6:+.2f} and the Kalshi-first side {_r6:+.2f}: a hint that Kalshi then
+        follows Deribit, on {int(_c6.n):,} observations, so not conclusive.
         """),
         heat_chart,
     ])
@@ -157,7 +196,7 @@ def _(H, INK2, MUTED, W, alt, leadlag, mo, pd, xc):
         + alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(x="x:Q")
     ).properties(width=W, height=H, title=alt.TitleParams(
         "Lead-lag profile for selected thresholds",
-        subtitle="Shaded: 95% interval treating 10-minute changes as independent (too narrow if they are autocorrelated)."))
+        subtitle="Shaded: 95% interval, resampling whole weeklies."))
 
     # Observations kept by each threshold
     _nn = xc[(xc.lag == 0) & xc.x.notna()].assign(X=lambda d: d.x.astype(int))
@@ -187,14 +226,16 @@ def _(H, INK2, MUTED, W, alt, leadlag, mo, pd, xc):
 
 
 @app.cell
-def _(H, MUTED, W, alt, leadlag, mo, panel, pd, xc):
-    # Check: why the gap is measured 80 minutes before t. Measured at the start of Kalshi's change instead, it shares
-    # its time stamp with the end of Deribit's change at k = -10, and selecting on a difference of two noisy readings
-    # correlates their noise: a spurious negative correlation that deepens with the threshold.
-    _late = leadlag.conditional_xcorr(panel, lags=[-10], gap_lead_min=leadlag.STEP_MIN)
+def _(H, MUTED, W, alt, leadlag, mo, panel, pd):
+    # Check, on 10-minute changes where it is clearest: why the gap is measured before every change in the window.
+    # Measured at the start of Kalshi's change instead, it shares its time stamp with the end of Deribit's change at
+    # k = -10, and selecting on a difference of two noisy readings correlates their noise: a spurious negative
+    # correlation that deepens with the threshold.
+    _late = leadlag.conditional_xcorr(panel, lags=[-10], change_min=10, gap_lead_min=10, n_boot=50)
+    _clean = leadlag.conditional_xcorr(panel, lags=[-10], change_min=10, n_boot=50)      # gap 80 minutes before t
     _cmp = pd.concat([
         _late[_late.x.notna()].assign(timing="gap at the start of Kalshi's change (biased)"),
-        xc[(xc.lag == -10) & xc.x.notna()].assign(timing="gap 80 minutes earlier (used)"),
+        _clean[_clean.x.notna()].assign(timing="gap 80 minutes earlier (used)"),
     ])
     _dom = ["gap at the start of Kalshi's change (biased)", "gap 80 minutes earlier (used)"]
     check_chart = (
@@ -203,13 +244,13 @@ def _(H, MUTED, W, alt, leadlag, mo, panel, pd, xc):
             color=alt.Color("timing:N", title=None, sort=_dom, legend=alt.Legend(labelLimit=0), scale=alt.Scale(domain=_dom, range=["#c23b3b", "#2a78d6"])),
             tooltip=["timing:N", "x:Q", alt.Tooltip("corr:Q", format="+.3f"), alt.Tooltip("n:Q", format=",")])
         + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
-    ).properties(width=W, height=H - 40, title="Check: the k = −10 correlation under the two gap timings")
-    _b, _g = _late.set_index("x")["corr"], xc[(xc.lag == -10)].set_index("x")["corr"]
+    ).properties(width=W, height=H - 40, title="Check (10-minute changes): the k = −10 correlation under the two gap timings")
+    _b, _g = _late.set_index("x")["corr"], _clean.set_index("x")["corr"]
     mo.vstack([
         mo.md(f"""
         ## Check: when the gap is measured matters
 
-        Measured at the start of Kalshi's change, the gap shares its time stamp with the *end* of Deribit's change at
+        With 10-minute changes, measured at the start of Kalshi's change, the gap shares its time stamp with the *end* of Deribit's change at
         k = −10. Selecting times where a difference of two noisy readings is large makes those readings' noise
         correlated, which shows up as a negative correlation at k = −10 that deepens with the threshold
         ({_b.loc[0]:+.3f} at X = 0, {_b.loc[4]:+.3f} at X = +4, {_b.loc[6]:+.3f} at X = +6). It would read as "when

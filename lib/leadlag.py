@@ -6,7 +6,8 @@
 2. Deribit: the Friday 08:00 expiry with the Kalshi weekly's date; its ATM vol from the trades in the 10 minutes
    *before* each time (so Deribit never sees the future): each trade's mark vol with the smile's shape taken out
    (`deribit_atm`), stretched to Kalshi's 5pm ET expiry with the hour-of-week profile as everywhere else.
-3. Changes: dK(t) = K(t) - K(t - 10 min), dD(t) likewise, within one weekly, only between consecutive grid times.
+3. Changes: dK(t) = K(t) - K(t - h), dD(t) likewise, within one weekly, over h = 10, 30 or 60 minutes (sampled every
+   10 minutes; 10-minute changes are mostly measurement noise, so longer h shows the co-movement more clearly).
 4. Lead-lag: corr(dK(t), dD(t + k)) for k = -60 ... +60 minutes. k > 0: Deribit's change comes after Kalshi's, so a
    peak there means Kalshi moves first; k < 0: Deribit moves first.
 5. Conditioning: only times t whose gap (Kalshi - Deribit, vol points) 80 minutes before t, before every change in
@@ -97,33 +98,52 @@ def _at(s: pd.Series, events, ts) -> np.ndarray:
     return s.reindex(pd.MultiIndex.from_arrays([events, ts])).to_numpy()
 
 
-def conditional_xcorr(p: pd.DataFrame, lags=range(-60, 61, 10), xs=range(-6, 7), normal: float = NORMAL_GAP,
-                      step_min: int = STEP_MIN, gap_lead_min: int = 60 + 2 * STEP_MIN) -> pd.DataFrame:
-    """corr(dK(t), dD(t + lag)) for each lag (minutes) and threshold X, over times t whose gap `gap_lead_min` minutes
-    before t is above X + `normal`. Also the unconditional row (X = None). Columns: x, threshold, lag, corr, n,
-    ci_low, ci_high (Fisher-z 95% interval treating observations as independent, so it is too narrow if changes are
-    serially correlated), plus the mean gap of the selected times.
+def _corr_from_sums(s: np.ndarray) -> np.ndarray:
+    """Pearson correlation from summed moments [n, Σa, Σb, Σa², Σb², Σab] along the last axis."""
+    n, a, b, aa, bb, ab = np.moveaxis(s, -1, 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (ab - a * b / n) / np.sqrt((aa - a * a / n) * (bb - b * b / n))
 
-    Default: the gap 80 minutes before t, before every change in the window. Measured later (e.g. at the start of
-    Kalshi's change, gap_lead_min = step) it shares a time stamp with the end of Deribit's
-    change at lag -step, and selecting on a difference of two noisy readings correlates their noise: a spurious
-    negative correlation at that lag."""
-    step = pd.Timedelta(minutes=step_min)
+
+def conditional_xcorr(p: pd.DataFrame, lags=range(-60, 61, 10), xs=range(-6, 7), normal: float = NORMAL_GAP,
+                      change_min: int = STEP_MIN, gap_lead_min: int | None = None, n_boot: int = 300,
+                      seed: int = 0) -> pd.DataFrame:
+    """corr(dK(t), dD(t + lag)) for each lag (minutes) and threshold X, where dK(t) = K(t) - K(t - change_min) and
+    likewise dD, over times t whose gap `gap_lead_min` minutes before t is above X + `normal`. Also the unconditional
+    row (X = None). Columns: x, threshold, lag, corr, n, ci_low, ci_high, mean_gap.
+
+    Changes over `change_min` minutes are taken every STEP_MIN minutes, so with change_min > STEP_MIN neighbouring
+    observations overlap; the 95% interval therefore resamples whole weeklies (`n_boot` times), not observations.
+
+    `gap_lead_min` defaults to the earliest time any change in the window starts, one step before it: max(-min(lags),
+    0) + change_min + STEP_MIN. Measured later (e.g. at the start of Kalshi's change) the gap shares a time stamp with
+    the end of one of Deribit's changes, and selecting on a difference of two noisy readings correlates their noise: a
+    spurious negative correlation at that lag."""
+    lags = list(lags)
+    if gap_lead_min is None:
+        gap_lead_min = max(-min(lags), 0) + change_min + STEP_MIN
+    h = pd.Timedelta(minutes=change_min)
     idx = p.set_index(["event_ticker", "ts"])
     K, D, G = idx.K, idx.D, idx.gap
     ev, ts = p.event_ticker.to_numpy(), p.ts
-    dK = p.K.to_numpy() - _at(K, ev, ts - step)
+    dK = p.K.to_numpy() - _at(K, ev, ts - h)
     gap0 = _at(G, ev, ts - pd.Timedelta(minutes=gap_lead_min))
-    dD = {L: _at(D, ev, ts + pd.Timedelta(minutes=L)) - _at(D, ev, ts + pd.Timedelta(minutes=L) - step) for L in lags}
+    dD = {L: _at(D, ev, ts + pd.Timedelta(minutes=L)) - _at(D, ev, ts + pd.Timedelta(minutes=L) - h) for L in lags}
+    codes, events = pd.factorize(ev)
+    rng = np.random.default_rng(seed)
+    boot = np.stack([np.bincount(rng.integers(0, len(events), len(events)), minlength=len(events))
+                     for _ in range(n_boot)])                                     # times each weekly is drawn
     rows = []
     for x in [None, *xs]:
         sel = np.ones(len(p), bool) if x is None else (gap0 > x + normal)
         for L in lags:
             ok = sel & np.isfinite(dK) & np.isfinite(dD[L])
-            n = int(ok.sum())
-            r = float(np.corrcoef(dK[ok], dD[L][ok])[0, 1]) if n >= 3 else np.nan
-            z, se = np.arctanh(np.clip(r, -0.999999, 0.999999)), 1 / np.sqrt(max(n - 3, 1))
-            rows.append({"x": x, "threshold": None if x is None else x + normal, "lag": L, "corr": r, "n": n,
-                         "ci_low": float(np.tanh(z - 1.96 * se)), "ci_high": float(np.tanh(z + 1.96 * se)),
-                         "mean_gap": float(np.nanmean(gap0[ok])) if n else np.nan})
+            a, b, c = dK[ok], dD[L][ok], codes[ok]
+            per = np.stack([np.bincount(c, w, len(events)) for w in (np.ones_like(a), a, b, a * a, b * b, a * b)], -1)
+            r = float(_corr_from_sums(per.sum(0))) if ok.sum() >= 3 else np.nan
+            rb = _corr_from_sums(boot @ per) if ok.sum() >= 3 else np.full(n_boot, np.nan)
+            rows.append({"x": x, "threshold": None if x is None else x + normal, "lag": L, "corr": r, "n": int(ok.sum()),
+                         "ci_low": float(np.nanpercentile(rb, 2.5)) if ok.sum() >= 3 else np.nan,
+                         "ci_high": float(np.nanpercentile(rb, 97.5)) if ok.sum() >= 3 else np.nan,
+                         "mean_gap": float(np.nanmean(gap0[ok])) if ok.any() else np.nan})
     return pd.DataFrame(rows)

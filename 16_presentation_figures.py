@@ -12,9 +12,9 @@ def _():
     import altair as alt
     import plotly.graph_objects as go
 
-    from lib import compare, iv, pairs
+    from lib import compare, iv, liquidity, pairs
 
-    return alt, compare, go, iv, mo, np, pairs, pd
+    return alt, compare, go, iv, liquidity, mo, np, pairs, pd
 
 
 @app.cell
@@ -537,6 +537,101 @@ def _(INK2, ROOT, W, alt, go, iv, mo, np, pd):
 
 
 @app.cell
+def _(DERIBIT, H, KALSHI, W, alt, liquidity, mo, np, pd, ROOT):
+    # Slide 7: liquidity. ATM bid-ask spread (Kalshi quoted; Deribit effective, from trades vs mark) and premium traded,
+    # by time to each contract's own expiry and across the year (lib/liquidity.py)
+    _r = liquidity.cached(ROOT)
+    _k, _d = _r["kalshi"], _r["deribit"]
+    _scale = alt.Scale(domain=["Kalshi", "Deribit"], range=[KALSHI, DERIBIT])
+    _k = _k.assign(market="Kalshi", day=_k.hour.dt.normalize())
+    _d = _d.assign(market="Deribit", day=_d.hour.dt.normalize())
+    _both = pd.concat([_k[["market", "hour", "day", "hours_to_expiry", "atm_rel_spread", "premium"]],
+                       _d[["market", "hour", "day", "hours_to_expiry", "atm_rel_spread", "premium"]]], ignore_index=True)
+    _both = _both[_both.hours_to_expiry.between(0, 168)]
+    # Every contract-hour counts once; fine bins near expiry, where most of the trading is
+    _edges = [0, 1, 3, 6, 12, 24, 48, 72, 96, 120, 144, 168]
+    _labels = ["0–1h", "1–3h", "3–6h", "6–12h", "12–24h", "1–2d", "2–3d", "3–4d", "4–5d", "5–6d", "6–7d"]
+    _both["ttm"] = pd.cut(_both.hours_to_expiry, _edges, labels=_labels, include_lowest=True).astype(str)
+    _order = _labels[::-1]                                       # time flows toward expiry, left to right
+    _t = (_both.groupby(["market", "ttm"])
+          .agg(spread=("atm_rel_spread", "median"), premium=("premium", "mean"), hours=("premium", "size")).reset_index())
+    _x = alt.X("ttm:N", title="time left to each contract's own expiry", sort=_order)
+    _tip = ["market:N", alt.Tooltip("ttm:N", title="time left"), alt.Tooltip("spread:Q", title="ATM spread", format=".1%"),
+            alt.Tooltip("premium:Q", title="premium per hour ($)", format=",.0f"), alt.Tooltip("hours:Q", title="contract-hours", format=",")]
+    spread_ttm_chart = alt.Chart(_t).mark_line(point=alt.OverlayMarkDef(size=60)).encode(
+        x=_x, y=alt.Y("spread:Q", title="at-the-money bid-ask spread (% of price)", axis=alt.Axis(format=".0%")),
+        color=alt.Color("market:N", title=None, scale=_scale), tooltip=_tip
+    ).properties(width=W, height=H, title=alt.TitleParams(
+        "Deribit is cheaper to trade until the last hours, when its expiring options are worth very little",
+        subtitle=["Median per contract-hour. Kalshi: quoted ask − bid of the strike nearest spot ÷ its mid (about 50¢). "
+                  "Deribit: effective round-trip spread of ATM trades (2 × trade-vs-mark) ÷ mark.",
+                  "As expiry nears, an ATM option's price shrinks toward zero, so the same dollar spread is a larger share of it."]))
+    volume_ttm_chart = alt.Chart(_t).mark_line(point=alt.OverlayMarkDef(size=60)).encode(
+        x=_x, y=alt.Y("premium:Q", title="premium traded per hour ($, log scale)", scale=alt.Scale(type="log"),
+                      axis=alt.Axis(format="$,.0s")),
+        color=alt.Color("market:N", title=None, scale=_scale), tooltip=_tip
+    ).properties(width=W, height=H, title=alt.TitleParams(
+        "Kalshi's trading piles into the last hour; Deribit's is steadier and far larger",
+        subtitle="Average dollars of option premium traded per hour (Kalshi: contracts × mid; Deribit: BTC × USD price), "
+                 "the Kalshi weekly vs Deribit's Friday expiry with the same date."))
+
+    # Across the year: daily median spread and daily premium, each with a 7-day average
+    _dd = (_both.groupby(["market", "day"]).agg(spread=("atm_rel_spread", "median"), premium=("premium", "sum"))
+           .reset_index())
+    _dd = _dd[_dd.day.between(_k.day.min(), _k.day.max()) & (_dd.premium > 0)]   # log scale: no zero-volume days
+    _dd = _dd.sort_values("day").reset_index(drop=True)
+    for _c in ("spread", "premium"):                       # 7 calendar days, so gaps (no weekly listed) are not bridged
+        _dd[f"{_c}_7d"] = (_dd.set_index("day").groupby("market")[_c]
+                           .transform(lambda s: s.rolling("7D", min_periods=4).mean()).to_numpy())
+    _xt = alt.X("day:T", title=None, axis=alt.Axis(format="%b %Y"))
+
+    def _over_time(col, title, y_title, fmt, subtitle, log=False):
+        y = alt.Scale(type="log") if log else alt.Scale(zero=False)
+        base = alt.Chart(_dd).encode(x=_xt, color=alt.Color("market:N", title=None, scale=_scale))
+        return (base.mark_circle(size=12, opacity=0.25).encode(y=alt.Y(f"{col}:Q", title=y_title, scale=y, axis=alt.Axis(format=fmt)))
+                + base.mark_line(strokeWidth=2.5).encode(
+                    y=f"{col}_7d:Q", tooltip=["market:N", alt.Tooltip("day:T", format="%Y-%m-%d"),
+                                              alt.Tooltip(f"{col}:Q", title="that day", format=fmt.replace("s", "f") if log else ".1%"),
+                                              alt.Tooltip(f"{col}_7d:Q", title="7-day average", format=fmt.replace("s", "f") if log else ".1%")])
+                ).properties(width=W, height=H, title=alt.TitleParams(title, subtitle=subtitle))
+
+    spread_time_chart = _over_time(
+        "spread", "Kalshi's spreads narrowed through the year; Deribit's stayed tight",
+        "at-the-money bid-ask spread (% of price)", ".0%",
+        "Dots: daily median; lines: 7-day average. Same definitions as above.")
+    volume_time_chart = _over_time(
+        "premium", "Deribit trades far more premium; Kalshi's volume grew more than tenfold over the year",
+        "premium traded per day ($, log scale)", "$,.0s",
+        "Dots: each day; lines: 7-day average. Kalshi weeklies vs the matching Deribit Friday expiries (last 7.5 days); "
+        "Deribit's peaks are its month-end expiries.",
+        log=True)
+    _tk = _t.set_index(["market", "ttm"])
+    _k_atm, _d_atm = _k.atm_rel_spread.median(), _d.atm_rel_spread.median()
+    _k_last = _k[_k.hours_to_expiry <= 1].premium.sum() / _k.premium.sum()
+    _ratio = _dd[_dd.market == "Deribit"].premium.median() / _dd[_dd.market == "Kalshi"].premium.median()
+    mo.vstack([
+        mo.md(f"""
+        ## Slide 7 · Liquidity: spreads and volumes
+
+        **Spreads.** Kalshi's at-the-money spread is a median **{_k.atm_spread.median() * 100:.0f}¢** on a contract
+        worth about {_k.atm_mid.median() * 100:.0f}¢, **{_k_atm:.1%}** of the price. Deribit has no quotes in our data,
+        so its spread is measured from trades: a buyer pays above Deribit's mark and a seller receives below it, and
+        twice that gap is the round-trip cost, a median **{_d_atm:.1%}** of the price
+        (${_d.atm_spread_usd.median():,.0f} on 1 BTC of options) at the money.
+
+        **Volumes.** Premium traded, in dollars, for the Kalshi weekly and the Deribit Friday expiry with the same date.
+        Deribit trades about **{_ratio:.0f}×** as much per day. **{_k_last:.0%}** of Kalshi's premium trades in the last
+        hour before its 5pm expiry.
+        """),
+        spread_ttm_chart,
+        volume_ttm_chart,
+        spread_time_chart,
+        volume_time_chart,
+    ])
+    return spread_time_chart, spread_ttm_chart, volume_time_chart, volume_ttm_chart
+
+
+@app.cell
 def _(
     ROOT,
     atm_spread_chart,
@@ -556,7 +651,11 @@ def _(
     surface_gap,
     surface_kalshi,
     surface_kalshi_all,
+    spread_time_chart,
+    spread_ttm_chart,
     surfaces_heat_chart,
+    volume_time_chart,
+    volume_ttm_chart,
     week_vol_chart,
 ):
     # Save everything when run as a script (python 16_presentation_figures.py); opening the notebook writes nothing
@@ -570,7 +669,9 @@ def _(
                               ("4d_backup_atm_spread_pairs_only", atm_spread_pairs_chart), ("5a_smile", smile_chart),
                               ("5b_smile_spread", smile_spread_chart), ("6a_surfaces_heatmap", surfaces_heat_chart),
                               ("6b_spread_surface_heatmap", gap_heat_chart),
-                              ("6g_kalshi_all_data_surface_heatmap", kalshi_all_heat_chart)]:
+                              ("6g_kalshi_all_data_surface_heatmap", kalshi_all_heat_chart),
+                              ("7a_spread_by_maturity", spread_ttm_chart), ("7b_spread_over_time", spread_time_chart),
+                              ("7c_volume_by_maturity", volume_ttm_chart), ("7d_volume_over_time", volume_time_chart)]:
             _chart.save(_out / f"{_name}.png", scale_factor=2)
             _chart.save(_out / f"{_name}.html")
         for _name, _fig in [("6c_surface_kalshi_3d", surface_kalshi), ("6d_surface_deribit_3d", surface_deribit),

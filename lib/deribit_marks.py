@@ -50,9 +50,14 @@ def load_options(root: Path, start=None, end=None) -> pd.DataFrame:
         d = d[d.ts >= pd.Timestamp(start, tz="UTC")]
     if end is not None:
         d = d[d.ts < pd.Timestamp(end, tz="UTC")]
-    d = d[(d.iv > 0) & (d.iv < 500) & (d.mark_price_btc > 0)].copy()
     d["tau_years"] = (d.expiry - d.ts).dt.total_seconds() / YEAR_SECONDS
-    d = d[d.tau_years > 0]
+    return add_forward(d)
+
+
+def add_forward(d: pd.DataFrame) -> pd.DataFrame:
+    """`load_options`' columns for any trades frame with ts, expiry, tau_years, strike, cp, iv (percent),
+    mark_price_btc, price_btc and index_price (e.g. `deribit.load_trades` on the collaborator's CSV)."""
+    d = d[(d.iv > 0) & (d.iv < 500) & (d.mark_price_btc > 0) & (d.tau_years > 0)].copy()
     d["iv_d"] = d.iv / 100
     d["mark_usd"] = d.mark_price_btc * d.index_price
     d["price_usd"] = d.price_btc * d.index_price
@@ -105,15 +110,11 @@ def implied_forward(price, K, sigma, tau, is_call, index, width: float = 0.05, i
     return np.where(valid, 0.5 * (lo + hi), np.nan)
 
 
-def smile_grid(d: pd.DataFrame, freq: str = "1h", half_window: str = "30min", centred: bool = True) -> pd.DataFrame:
-    """Deribit's smile for every expiry at every grid time, from the trades in a window around it.
-
-    `centred`: trades within +/- `half_window` of the grid time (for valuing positions); otherwise the trades in
-    the `2 x half_window` before it (for signals that must not see the future). Per strike the median mark vol and
-    m; then a quadratic iv = a + b m + c m^2 by least squares over strikes within SMILE_MAX_SD ATM standard
-    deviations (at least MIN_SMILE_STRIKES strikes, with the forward inside their range). Returns one row per (expiry, t): `atm_iv` (= a), `b`, `c`, `basis` (median),
-    `index` (median), `n_strikes`, `n_trades`, `m_lo`, `m_hi` (range of strikes used), `tau_years` at t.
-    """
+def window_strikes(d: pd.DataFrame, freq: str = "1h", half_window: str = "30min",
+                   centred: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The trades `smile_grid` fits, summarised: per (expiry, t, strike) the median `m` and mark vol `iv` and the
+    trade count `n`; per (expiry, t) the median `basis` and `index`, `n_trades` and the median vol `ref`.
+    Windows as in `smile_grid`; grid times at or after the expiry are dropped."""
     step, hw = pd.Timedelta(freq), pd.Timedelta(half_window)
     n_back = int(np.ceil(2 * hw / step))
     if centred:
@@ -133,6 +134,19 @@ def smile_grid(d: pd.DataFrame, freq: str = "1h", half_window: str = "30min", ce
                                                                   n=("iv", "size")).reset_index()
     g = x.groupby(["expiry", "t"], sort=False).agg(basis=("basis", "median"), index=("index", "median"),
                                                      n_trades=("iv", "size"), ref=("iv", "median"))
+    return per_k, g
+
+
+def smile_grid(d: pd.DataFrame, freq: str = "1h", half_window: str = "30min", centred: bool = True) -> pd.DataFrame:
+    """Deribit's smile for every expiry at every grid time, from the trades in a window around it.
+
+    `centred`: trades within +/- `half_window` of the grid time (for valuing positions); otherwise the trades in
+    the `2 x half_window` before it (for signals that must not see the future). Per strike the median mark vol and
+    m (`window_strikes`); then a quadratic iv = a + b m + c m^2 by least squares over strikes within SMILE_MAX_SD ATM standard
+    deviations (at least MIN_SMILE_STRIKES strikes, with the forward inside their range). Returns one row per (expiry, t): `atm_iv` (= a), `b`, `c`, `basis` (median),
+    `index` (median), `n_strikes`, `n_trades`, `m_lo`, `m_hi` (range of strikes used), `tau_years` at t.
+    """
+    per_k, g = window_strikes(d, freq, half_window, centred)
     per_k = per_k.join(g.ref, on=["expiry", "t"])
     per_k = per_k[np.abs(per_k.m) <= SMILE_MAX_SD * per_k.ref]
     m, y = per_k.m.to_numpy(), per_k.iv.to_numpy()

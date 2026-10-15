@@ -12,9 +12,9 @@ def _():
     import altair as alt
     import plotly.graph_objects as go
 
-    from lib import pairs
+    from lib import deribit, iv, pairs
 
-    return alt, go, mo, np, pairs, pd
+    return alt, deribit, go, iv, mo, np, pairs, pd
 
 
 @app.cell
@@ -211,61 +211,103 @@ def _(DERIBIT, H, INK2, W, alt, mo, np, offsets, pd):
 
 
 @app.cell
-def _(H, INK, MARKETS, MUTED, W, alt, atm, mo, pairs, pd):
-    # Slide 4: ATM vol by time to Kalshi's expiry, both markets, and their spread
-    DAY_EDGES = [x / 2 for x in range(1, 15)]                   # half-day bins, 0.5 to 7 days
-    _a = atm.assign(days=atm.kalshi_hours / 24)
-    _a = _a.assign(bin=pd.cut(_a.days, DAY_EDGES)).dropna(subset=["bin"])
-    _lv = (_a.groupby("bin", observed=True)
-           .agg(**{"Kalshi": ("kalshi_iv", "median"), "Deribit (stretched)": ("deribit_iv_adj", "median"),
-                   "Deribit (as traded)": ("deribit_iv", "median"), "pairs": ("kalshi_iv", "size")}).reset_index())
-    _lv = _lv[_lv.pairs >= 200]
-    _lv["days"] = _lv.bin.map(lambda i: i.mid).astype(float)
-    _long = _lv.drop(columns="bin").melt(id_vars=["days", "pairs"], var_name="market", value_name="vol")
-    _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
-    atm_term_chart = (
-        alt.Chart(_long).mark_line(point=alt.OverlayMarkDef(size=55)).encode(
-            x=_x, y=alt.Y("vol:Q", title="implied vol at the money (median)", axis=alt.Axis(format="%"), scale=alt.Scale(zero=False)),
-            # one field, so altair merges these into a single legend that shows colour and dash together
-            color=alt.Color("market:N", title=None, scale=MARKETS, legend=alt.Legend(symbolType="stroke", symbolSize=400)),
-            strokeDash=alt.StrokeDash("market:N", title=None, scale=alt.Scale(
-                domain=["Kalshi", "Deribit (stretched)", "Deribit (as traded)"], range=[[1, 0], [1, 0], [5, 4]])),
-            tooltip=["market:N", alt.Tooltip("days:Q", title="days left"), alt.Tooltip("vol:Q", format=".1%"),
-                     alt.Tooltip("pairs:Q", format=",")])
-    ).properties(width=W, height=H, title=alt.TitleParams(
-        "At the money, Kalshi prices more volatility than Deribit, most of all near expiry",
-        subtitle="Median implied vol of the at-the-money pairs (within 0.25 standard deviations), half-day bins; "
-                 "dashed: Deribit before the stretch."))
+def _(ROOT, deribit, hour_profile, pd):
+    # Every hour, not only the paired moments: each clean hourly Kalshi snapshot (03, every weekly) against Deribit's
+    # fitted ATM vol for the Friday expiry with the same date at the same hour (08's hourly smile grid), stretched to
+    # Kalshi's expiry exactly as in the pairs. Each week-hour counts once.
+    _s = pd.read_parquet(ROOT / "data" / "derived" / "iv_snapshots.parquet")
+    _k = _s[_s.clean & (_s.ts.dt.minute == 0)].copy()
+    _k["kalshi_expiry"] = (_k.ts + pd.to_timedelta(_k.hours_to_expiry, unit="h")).dt.round("h")
+    _k["deribit_expiry"] = _k.kalshi_expiry.dt.normalize() + pd.Timedelta(hours=8)
+    _g = pd.read_parquet(ROOT / "data" / "derived" / "strategies" / "deribit_grid_centred.parquet",
+                         columns=["expiry", "t", "atm_iv"])
+    hourly = _k.merge(_g.rename(columns={"expiry": "deribit_expiry", "t": "ts", "atm_iv": "deribit_atm"}),
+                      on=["deribit_expiry", "ts"])
+    hourly["deribit_adj"] = hourly.deribit_atm * deribit.horizon_vol_ratios(
+        hourly.ts, hourly.kalshi_expiry, hourly.deribit_expiry, hour_profile)
+    hourly["gap_adj"] = 100 * (hourly.atm_iv - hourly.deribit_adj)
+    hourly["days"] = hourly.hours_to_expiry / 24
+    n_hourly_kalshi = len(_k)
+    return hourly, n_hourly_kalshi
 
-    _g = pairs.gap_table(_a, "bin", col="gap_adj").rename(columns={"days": "n_days"})
-    _g["days"] = _g.bin.map(lambda i: i.mid).astype(float)
-    _g = _g[_g.pairs >= 200].drop(columns="bin")          # intervals cannot go into a chart spec
-    atm_spread_chart = (
-        alt.Chart(_g).mark_area(color=MUTED, opacity=0.25).encode(x=_x, y="ci_low:Q", y2="ci_high:Q")
-        + alt.Chart(_g).mark_line(color=INK, point=alt.OverlayMarkDef(size=55, color=INK)).encode(
-            x=_x, y=alt.Y("median_gap:Q", title="Kalshi − Deribit (vol points)"),
-            tooltip=[alt.Tooltip("days:Q", title="days left"), alt.Tooltip("median_gap:Q", title="spread", format="+.2f"),
-                     alt.Tooltip("ci_low:Q", title="95% low", format="+.2f"), alt.Tooltip("ci_high:Q", title="95% high", format="+.2f"),
-                     alt.Tooltip("pairs:Q", format=","), alt.Tooltip("n_days:Q", title="days with pairs")])
-        + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
-    ).properties(width=W, height=H - 60, title=alt.TitleParams(
-        "The ATM spread: Kalshi − Deribit (stretched)",
-        subtitle="Median per half-day bin; shaded: 95% interval resampling whole days."))
-    _all = pairs.gap_table(_a.assign(all=1), "all", col="gap_adj").iloc[0]
+
+@app.cell
+def _(DERIBIT, H, INK, KALSHI, MUTED, W, alt, atm, hourly, mo, n_hourly_kalshi, pairs, pd):
+    # Slide 4: ATM vol by time to Kalshi's expiry, Kalshi vs Deribit stretched, and their spread.
+    # Main version: every hour (smooth, each week-hour counts once). Backup: the paired trades, which weight each
+    # moment by how many Deribit trades it had, so busy (volatile) days dominate and the levels jump between bins.
+    DAY_EDGES = [x / 2 for x in range(1, 15)]                   # half-day bins, 0.5 to 7 days
+    _scale = alt.Scale(domain=["Kalshi", "Deribit (stretched)"], range=[KALSHI, DERIBIT])
+    _x = alt.X("days:Q", title="days to Kalshi's expiry", scale=alt.Scale(domain=[0.5, 7], nice=False))
+
+
+    def term_charts(d, kalshi, deribit_, unit, min_n, n_label, title, subtitle):
+        """Levels (median per half-day bin) and spread (median, 95% interval resampling whole `unit`s)."""
+        d = d.assign(bin=pd.cut(d.days, DAY_EDGES), day=d[unit]).dropna(subset=["bin"])
+        lv = (d.groupby("bin", observed=True)
+              .agg(**{"Kalshi": (kalshi, "median"), "Deribit (stretched)": (deribit_, "median"), "n": (kalshi, "size")})
+              .reset_index())
+        lv = lv[lv.n >= min_n]
+        lv["days"] = lv.bin.map(lambda i: i.mid).astype(float)
+        long = lv.drop(columns="bin").melt(id_vars=["days", "n"], var_name="market", value_name="vol")
+        levels = alt.Chart(long).mark_line(point=alt.OverlayMarkDef(size=55)).encode(
+            x=_x, y=alt.Y("vol:Q", title="implied vol at the money (median)", axis=alt.Axis(format="%"),
+                          scale=alt.Scale(zero=False)),
+            color=alt.Color("market:N", title=None, scale=_scale),
+            tooltip=["market:N", alt.Tooltip("days:Q", title="days left"), alt.Tooltip("vol:Q", format=".1%"),
+                     alt.Tooltip("n:Q", title=n_label, format=",")]
+        ).properties(width=W, height=H, title=alt.TitleParams(title, subtitle=subtitle))
+        g = pairs.gap_table(d, "bin", col="gap_adj").rename(columns={"days": "n_units"})
+        g["days"] = g.bin.map(lambda i: i.mid).astype(float)
+        g = g[g.pairs >= min_n].drop(columns="bin")          # intervals cannot go into a chart spec
+        spread = (
+            alt.Chart(g).mark_area(color=MUTED, opacity=0.25).encode(x=_x, y="ci_low:Q", y2="ci_high:Q")
+            + alt.Chart(g).mark_line(color=INK, point=alt.OverlayMarkDef(size=55, color=INK)).encode(
+                x=_x, y=alt.Y("median_gap:Q", title="Kalshi − Deribit (vol points)"),
+                tooltip=[alt.Tooltip("days:Q", title="days left"), alt.Tooltip("median_gap:Q", title="spread", format="+.2f"),
+                         alt.Tooltip("ci_low:Q", title="95% low", format="+.2f"),
+                         alt.Tooltip("ci_high:Q", title="95% high", format="+.2f"), alt.Tooltip("pairs:Q", title=n_label, format=",")])
+            + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=MUTED, strokeDash=[4, 3]).encode(y="y:Q")
+        ).properties(width=W, height=H - 60, title=alt.TitleParams(
+            "The ATM spread: Kalshi − Deribit (stretched)",
+            subtitle=f"Median per half-day bin; shaded: 95% interval resampling whole {'weeks' if unit == 'event_ticker' else 'days'}."))
+        overall = pairs.gap_table(d.assign(all=1), "all", col="gap_adj").iloc[0]
+        return levels, spread, g, overall
+
+
+    atm_term_chart, atm_spread_chart, _g, _all = term_charts(
+        hourly, "atm_iv", "deribit_adj", "event_ticker", 100, "hours",
+        "At the money, Kalshi prices more volatility than Deribit, most of all near expiry",
+        f"Every hour: Kalshi's ATM vol vs Deribit's fitted ATM vol for the same Friday, stretched to Kalshi's expiry; "
+        f"{len(hourly):,} hours in {hourly.event_ticker.nunique()} weeks.")
+    atm_term_pairs_chart, atm_spread_pairs_chart, _gp, _allp = term_charts(
+        atm.assign(days=atm.kalshi_hours / 24), "kalshi_iv", "deribit_iv_adj", "day", 200, "pairs",
+        "Backup: the same comparison on the paired trades only",
+        "At-the-money pairs (within 0.25 SD); each Deribit trade counts once, so busy days weigh more.")
     _far, _near = _g[_g.days >= 5].median_gap.median(), _g[_g.days <= 1.5].median_gap.median()
     mo.vstack([
         mo.md(f"""
         ## Slide 4 · ATM implied vol by time to maturity
 
-        Overall, Kalshi's ATM vol is **{_all.median_gap:+.1f} points** above Deribit's (95% interval
-        {_all.ci_low:+.1f} to {_all.ci_high:+.1f}), higher in {_all.kalshi_higher:.0%} of pairs. The spread is about
-        **{_far:+.1f}** points with 5–7 days left and **{_near:+.1f}** with about a day left. The stretch removes much
-        of the near-expiry gap (dashed vs solid orange) but not all of it.
+        **Every hour of every week**, not just the moments when Deribit traded: Kalshi's ATM vol from each clean hourly
+        snapshot ({len(hourly):,} of {n_hourly_kalshi:,} have a Deribit Friday expiry still live), against Deribit's
+        fitted ATM vol for the same Friday at the same hour, stretched to Kalshi's expiry. Overall Kalshi is
+        **{_all.median_gap:+.1f} points** above Deribit (95% interval {_all.ci_low:+.1f} to {_all.ci_high:+.1f},
+        resampling whole weeks), higher in {_all.kalshi_higher:.0%} of hours. The spread is about **{_near:+.1f}**
+        points with about a day left and **{_far:+.1f}** with 5–7 days left.
         """),
         atm_term_chart,
         atm_spread_chart,
+        mo.md(f"""
+        **Why the paired version (below) is noisier.** A pair exists only when someone trades a near-the-money Deribit
+        strike, and every trade counts once, so busy days, which are the volatile days, dominate whichever bins they
+        fall in and the *levels* jump from bin to bin. The *spread* is far steadier because each pair compares the two
+        markets at the same minute. It tells the same story: {_allp.median_gap:+.1f} points overall at the money.
+        """),
+        atm_term_pairs_chart,
+        atm_spread_pairs_chart,
     ])
-    return atm_spread_chart, atm_term_chart
+    return atm_spread_chart, atm_spread_pairs_chart, atm_term_chart, atm_term_pairs_chart
 
 
 @app.cell
@@ -414,11 +456,78 @@ def _(INK2, W, alt, go, mo, paired, pairs):
 
 
 @app.cell
+def _(INK2, ROOT, W, alt, go, iv, mo, np, pd):
+    # Slide 6 extra: Kalshi's surface from ALL its data (03: every clean 15-minute smile, every strike), not only the
+    # strikes and moments where Deribit traded. Same construction as 03's surface (iv.pooled_surface).
+    _k = pd.read_parquet(ROOT / "data" / "derived" / "iv_strikes.parquet",
+                         columns=["snap", "strike", "spot", "atm_iv", "tau_years", "hours_to_expiry", "iv_surface"])
+    _k = _k[_k.iv_surface.notna()]
+    _k["sd_from_spot"] = (_k.strike / _k.spot - 1) / (_k.atm_iv * np.sqrt(_k.tau_years))   # as 03 defines it
+    KALSHI_H_EDGES = [1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120, 144, 168.5]
+    _sd_edges = np.arange(-3.0, 3.001, 0.25)
+    _grid = iv.pooled_surface(_k, KALSHI_H_EDGES, _sd_edges, min_obs=100, min_snaps=20)
+    _x, _y = [i.mid for i in _grid.columns], [i.mid for i in _grid.index]
+    surface_kalshi_all = go.Figure(go.Surface(
+        x=_x, y=_y, z=_grid.to_numpy(), colorscale=[[0, "#cde2fb"], [1, "#0d366b"]], cmin=0.35, cmax=0.9,
+        colorbar=dict(title="IV", tickformat=".0%"),
+        hovertemplate="%{x:+.2f} SD from spot<br>%{y:.1f} hours to expiry<br>implied vol %{z:.1%}<extra></extra>"))
+    surface_kalshi_all.update_layout(
+        title=dict(text="Kalshi implied-vol surface, all data: 1 hour to 7 days", font=dict(size=18)), height=620,
+        margin=dict(l=0, r=0, t=60, b=0), paper_bgcolor="#fcfcfb",
+        font=dict(family="system-ui, -apple-system, Segoe UI, sans-serif", color=INK2, size=13),
+        scene=dict(xaxis_title="standard deviations from spot",
+                   yaxis=dict(title="time to expiry", type="log", tickvals=[1, 2, 3, 6, 12, 24, 48, 72, 120, 168],
+                              ticktext=["1h", "2h", "3h", "6h", "12h", "1d", "2d", "3d", "5d", "7d"]),
+                   zaxis=dict(title="implied vol", tickformat=".0%"), camera=dict(eye=dict(x=1.7, y=-1.5, z=0.8))))
+
+    _span = lambda h: f"{h:g}h" if h < 24 else f"{h / 24:g}d"
+    _cells = _grid.stack().rename("vol").dropna().reset_index()
+    _cells["sd"] = _cells.m.map(lambda i: round(i.mid, 3)).astype(float)
+    _cells["tau"] = _cells.h.map(lambda i: f"{_span(round(i.left))}–{_span(round(i.right))}")
+    _order = [f"{_span(round(a))}–{_span(round(b))}" for a, b in zip(KALSHI_H_EDGES[:-1], KALSHI_H_EDGES[1:])][::-1]
+    _cells = _cells.drop(columns=["m", "h"]).assign(sd_lo=lambda d: d.sd - 0.125, sd_hi=lambda d: d.sd + 0.125)
+    kalshi_all_heat_chart = (
+        alt.Chart(_cells).mark_rect(stroke="#fcfcfb", strokeWidth=1).encode(
+            x=alt.X("sd_lo:Q", title="standard deviations from spot", scale=alt.Scale(domain=[-3, 3], nice=False),
+                    axis=alt.Axis(values=[x / 2 for x in range(-6, 7)])),
+            x2="sd_hi:Q", y=alt.Y("tau:O", title="time to Kalshi's expiry", sort=_order),
+            color=alt.Color("vol:Q", title="implied vol", legend=alt.Legend(format=".0%", orient="right"),
+                            scale=alt.Scale(range=["#cde2fb", "#0d366b"], domain=[0.35, 0.9], clamp=True)),
+            tooltip=[alt.Tooltip("tau:O", title="time to expiry"), alt.Tooltip("sd:Q", title="SD from spot"),
+                     alt.Tooltip("vol:Q", title="implied vol", format=".1%")])
+    ).properties(width=W, height=380, title=alt.TitleParams(
+        "Kalshi's surface from all of its data: vol rises toward expiry and in both wings",
+        subtitle=f"Every clean 15-minute smile ({_k.snap.nunique():,} snapshots, {len(_k):,} strike vols); typical smile "
+                 f"shape × typical ATM vol per row, as in 03; colour capped at 35–90%."))
+    _atm = _grid.loc[:, [c for c in _grid.columns if c.left == 0.0 or c.right == 0.0]].mean(axis=1).dropna()
+    _first = _atm.index[0]                                   # the shortest time bin with enough data
+    mo.vstack([
+        mo.md(f"""
+        ### Slide 6 extra · Kalshi's surface from all of its data
+
+        Slide 6's surfaces use only the pairs, so Kalshi is read just where Deribit traded. Here Kalshi uses
+        **everything**: every clean smile, one every 15 minutes, every strike, {_k.snap.nunique():,} snapshots in all
+        (`03_iv_surface.py`). Time is on a log axis so the final day, where Kalshi's vol rises sharply, is visible:
+        about **{_atm.iloc[0]:.0%}** at the money with {_first.left:g}–{_first.right:g} hours left, against
+        **{_atm.iloc[-1]:.0%}** a week out. Blank cells are where Kalshi's prices are too coarse to give a vol (as in
+        `03`, only contracts priced 5–95¢ are used): the last few hours, and strikes beyond about ±2 standard deviations.
+        This surface is not on Deribit's terms; for a side-by-side, use slide 6.
+        """),
+        surface_kalshi_all,
+        kalshi_all_heat_chart,
+    ])
+    return kalshi_all_heat_chart, surface_kalshi_all
+
+
+@app.cell
 def _(
     ROOT,
     atm_spread_chart,
+    atm_spread_pairs_chart,
     atm_term_chart,
+    atm_term_pairs_chart,
     gap_heat_chart,
+    kalshi_all_heat_chart,
     mo,
     offset_chart,
     smile_chart,
@@ -428,6 +537,7 @@ def _(
     surface_deribit,
     surface_gap,
     surface_kalshi,
+    surface_kalshi_all,
     surfaces_heat_chart,
     week_vol_chart,
 ):
@@ -437,13 +547,17 @@ def _(
         _out.mkdir(parents=True, exist_ok=True)
         for _name, _chart in [("1_week_vol_profile", week_vol_chart), ("2_stretch_factor", stretch_chart),
                               ("3_trade_to_quote_distance", offset_chart), ("4a_atm_vol_by_maturity", atm_term_chart),
-                              ("4b_atm_spread_by_maturity", atm_spread_chart), ("5a_smile", smile_chart),
+                              ("4b_atm_spread_by_maturity", atm_spread_chart),
+                              ("4c_backup_atm_vol_pairs_only", atm_term_pairs_chart),
+                              ("4d_backup_atm_spread_pairs_only", atm_spread_pairs_chart), ("5a_smile", smile_chart),
                               ("5b_smile_spread", smile_spread_chart), ("6a_surfaces_heatmap", surfaces_heat_chart),
-                              ("6b_spread_surface_heatmap", gap_heat_chart)]:
+                              ("6b_spread_surface_heatmap", gap_heat_chart),
+                              ("6g_kalshi_all_data_surface_heatmap", kalshi_all_heat_chart)]:
             _chart.save(_out / f"{_name}.png", scale_factor=2)
             _chart.save(_out / f"{_name}.html")
         for _name, _fig in [("6c_surface_kalshi_3d", surface_kalshi), ("6d_surface_deribit_3d", surface_deribit),
-                            ("6e_surfaces_both_3d", surface_both), ("6f_spread_surface_3d", surface_gap)]:
+                            ("6e_surfaces_both_3d", surface_both), ("6f_spread_surface_3d", surface_gap),
+                            ("6h_kalshi_all_data_surface_3d", surface_kalshi_all)]:
             _fig.write_html(_out / f"{_name}.html", include_plotlyjs=True)   # self-contained: works offline
     return
 

@@ -26,11 +26,12 @@ def _(mo):
     The Deribit counterpart of `03`'s Kalshi surface: implied vol across strikes and time to expiry, built the same
     way and drawn on the same axes, so the two can be read side by side.
 
-    **Data.** `data/deribit_btc_options.csv.gz` (the collaborator's file): about 206k BTC option **trades**,
-    15 Jan – 30 Sep 2026, in two windows a day (07:00–08:00 and 19:30–22:30 UTC), expiries up to about 8.5 days.
+    **Data.** Every Deribit BTC option **trade**, all day and every expiry, 15 Nov 2024 – 30 Sep 2026 (the span of
+    our Kalshi data; `data/raw/deribit_trades/`, from `00_fetch_deribit_all.py`). Without that fetch the notebook
+    falls back to the collaborator's file, which has two windows a day and expiries up to about 8.5 days.
     There are no quotes, but every trade carries Deribit's **mark vol** for its instrument at that instant:
     Deribit's own fair-value vol, the one it values positions with. Trades over a short window therefore trace
-    Deribit's mark smile. Longer expiries need the full-day fetch (`00_fetch_deribit_all.py`), not on disk here.
+    Deribit's mark smile.
 
     **Method** (`lib/deribit_marks.py`, as in `08`–`14`):
 
@@ -46,8 +47,10 @@ def _(mo):
 
     **Coordinates.** Horizontal: distance from the forward in ATM standard deviations,
     `(K / F − 1) / (ATM IV × √τ)`; 0 is the money, ±1 one ATM-implied standard deviation over the option's
-    remaining life. `03` measures from spot; Deribit's forward sits a median 0.01% from its index over these
-    horizons, so the two are the same axis. Vertical: time to expiry. Vols are annualised.
+    remaining life. `03` measures from spot. Within a week Deribit's forward is within about 0.01% of its index,
+    so there the two are the same axis; further out the forward carries the futures basis (a median of roughly 0.1%
+    at 1–4 weeks, 0.4% at 1–3 months, 2% at 6–12 months in March 2026), and measuring from the forward is the
+    standard convention. Vertical: time to expiry. Vols are annualised.
 
     It writes nothing when opened; run as a script (`python 15_deribit_iv_surface.py`) it saves its figures to
     `outputs/figures/` (prefixed `15_`) and the 3D surfaces to `outputs/15_deribit_iv_surface_3d.html`.
@@ -88,7 +91,8 @@ def _(deribit, dm, mo, np, pd):
     ROOT = mo.notebook_dir()
     HOURS_PER_YEAR = 365 * 24
 
-    trades = dm.add_forward(deribit.load_trades(ROOT / "data" / "deribit_btc_options.csv.gz"))
+    _path = deribit.trades_path(ROOT)    # every trade if fetched, else the collaborator's two-window file
+    trades = dm.add_forward(dm.read_full_trades(ROOT) if deribit.is_full(_path) else deribit.load_trades(_path))
     smiles = dm.smile_grid(trades)                         # one row per (expiry, hourly snapshot)
     per_k, snap_info = dm.window_strikes(trades)           # the per-strike mark vols those smiles were fitted to
 
@@ -105,7 +109,7 @@ def _(deribit, dm, mo, np, pd):
     mo.md(f"""
     ## 1 · What the data give
 
-    **{len(trades):,}** trades with a usable mark vol and forward ({trades.ts.min():%d %b} – {trades.ts.max():%d %b %Y},
+    **{len(trades):,}** trades with a usable mark vol and forward ({trades.ts.min():%d %b %Y} – {trades.ts.max():%d %b %Y},
     **{trades.expiry.nunique()}** expiries). On the hourly grid they give **{_n_snap:,}** snapshots and
     **{len(smiles):,}** fitted smiles, about {len(smiles) / _n_snap:.1f} live expiries per snapshot, from
     **{len(strikes):,}** strike-level mark vols (median {smiles.n_strikes.median():.0f} strikes per smile).
@@ -186,8 +190,8 @@ def _(CONTEXT, H, INK2, W, alt, date_select, dm, mo, np, pd, smiles, strikes, ti
 
         Every Deribit expiry live at one snapshot. **Points**: each strike's median mark vol over the ±30-minute
         window (hover for strike and trade count). **Lines**: the fitted quadratic over the strikes it was fitted to.
-        Snapshots exist at 07:00 and 08:00 (around Deribit's 08:00 expiry, so an expiring daily drops out at 08:00)
-        and 20:00–22:00 UTC (the US afternoon).
+        Snapshots are hourly; an expiry shows when at least three of its strikes traded in the window around it, so
+        quiet long-dated expiries come and go from hour to hour.
         """),
         mo.hstack([date_select, time_select], justify="start"),
         snapshot_chart,
@@ -200,7 +204,11 @@ def _(CONTEXT, H, INK2, W, alt, date_select, dm, mo, np, pd, smiles, strikes, ti
 @app.cell
 def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
     # Pooled surface (method step 4): typical smile shape x typical ATM vol, as in 03
-    H_EDGES = [1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120, 144, 168, 204]
+    # Time bins in hours: fine near expiry, then days, weeks, months, out to the longest expiry traded
+    _all_edges = [1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120, 144, 168, 240, 336, 504, 720, 1080, 1440, 2160,
+                  4380, 8760]
+    H_EDGES = [h for h in _all_edges if h < smiles.hours_to_expiry.max()]
+    H_EDGES.append(next(h for h in _all_edges if h >= smiles.hours_to_expiry.max()))
     SD_EDGES = np.arange(-3.0, 3.001, 0.25)
     MIN_OBS, MIN_SNAPS = 30, 20
     surf_in = strikes.assign(sd_from_spot=strikes.sd_from_fwd, iv_surface=strikes.iv)   # pooled_surface's column names
@@ -210,12 +218,16 @@ def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
         return iv.pooled_surface(surf_in, h_edges, m_edges, min_obs=MIN_OBS, min_snaps=MIN_SNAPS)
 
 
+    def _span(h):
+        return f"{round(h):g}h" if h < 24 else f"{h / 24:g}d"   # round: pd.cut nudges the first edge below 1
+
+
     _grid = deribit_surface(H_EDGES, SD_EDGES)
     surface = _grid.stack().rename("median").dropna().reset_index()
     surface["z_mid"] = surface.m.map(lambda i: round(i.mid, 3)).astype(float)
     surface["z_lo"], surface["z_hi"] = surface.z_mid - 0.125, surface.z_mid + 0.125
-    surface["tau"] = surface.h.map(lambda i: f"{i.left:g}–{i.right:g}h")
-    _tau_order = [f"{a:g}–{b:g}h" for a, b in zip(H_EDGES[:-1], H_EDGES[1:])][::-1]
+    surface["tau"] = surface.h.map(lambda i: f"{_span(i.left)}–{_span(i.right)}")
+    _tau_order = [f"{_span(a)}–{_span(b)}" for a, b in zip(H_EDGES[:-1], H_EDGES[1:])][::-1]
     surface = surface.drop(columns=["m", "h"])
     surface_chart = (
         alt.Chart(surface).mark_rect()
@@ -226,7 +238,8 @@ def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
                           scale=alt.Scale(scheme="oranges", domain=[0.3, 0.7], clamp=True)),
                 tooltip=[alt.Tooltip("tau:O", title="time to expiry"), alt.Tooltip("z_mid:Q", title="ATM SDs"),
                          alt.Tooltip("median:Q", title="implied vol", format=".1%")])
-        .properties(title="Deribit implied-vol surface: typical smile shape x typical ATM vol", width=W, height=320)
+        .properties(title="Deribit implied-vol surface: typical smile shape x typical ATM vol", width=W,
+                    height=18 * (len(H_EDGES) - 1))
     )
 
     # ATM term structure: median and interquartile range of the fitted ATM vol per time bin
@@ -234,8 +247,11 @@ def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
     term = _s.groupby("h", observed=True).atm_iv.describe()[["25%", "50%", "75%", "count"]].reset_index()
     term["hours"] = term.h.map(lambda i: i.mid).astype(float)
     term = term.drop(columns="h")
-    _x = alt.X("hours:Q", title="time to expiry (hours, log scale)", scale=alt.Scale(type="log", domain=[1, 204]),
-               axis=alt.Axis(values=[1, 3, 6, 12, 24, 48, 96, 192]))
+    _ticks = [h for h in [1, 3, 6, 12, 24, 72, 168, 720, 2160, 8760] if h <= H_EDGES[-1]]
+    _x = alt.X("hours:Q", title="time to expiry (log scale)", scale=alt.Scale(type="log", domain=[1, H_EDGES[-1]]),
+               axis=alt.Axis(values=_ticks, labelExpr="datum.value < 24 ? datum.value + 'h' : "
+                                                      "datum.value < 720 ? datum.value / 24 + 'd' : "
+                                                      "round(datum.value / 730) + 'mo'"))
     term_chart = (
         alt.Chart(term).mark_area(opacity=0.25, color="#eb6834").encode(_x, alt.Y("25%:Q"), alt.Y2("75%:Q"))
         + alt.Chart(term).mark_line(point=True).encode(
@@ -246,11 +262,16 @@ def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
     ).properties(title="Deribit ATM vol by time to expiry (median, shaded: interquartile range)", width=W, height=H)
 
     _cell = lambda h, z: surface.loc[(surface.tau == h) & np.isclose(surface.z_mid, z), "median"]
-    _row = "24–36h"
+    _row = "1d–1.5d"
     _p, _c, _a = (_cell(_row, z) for z in (-1.875, 1.875, 0.125))
     _skew_txt = (f"At {_row} to expiry the cell around −1.9 SDs is at **{_p.iloc[0]:.1%}**, around +1.9 SDs "
                  f"**{_c.iloc[0]:.1%}**, against **{_a.iloc[0]:.1%}** near the money."
                  if len(_p) and len(_c) and len(_a) else "")
+    EMPTY_NOTE = """**Reading the rows.** The **4–5 day row stands out** (higher at every strike). Beyond four days only Friday
+    expiries trade (Deribit lists dailies about four days ahead), and that row sees them on Sunday and Monday, when
+    about 5% of the remaining life is weekend hours, against 22–30% in the 5–7 day rows. BTC moves more on weekdays
+    (`04`, section 6), so an annualised vol over a weekday-only stretch is higher; that is the likely reason. The
+    empty top-left corner is the far put wing of the longest expiries, where few strikes trade."""
     mo.vstack([
         mo.md(f"""
         ## 3 · The pooled surface
@@ -262,15 +283,7 @@ def _(H, INK2, W, alt, iv, mo, np, pd, smiles, strikes):
         """),
         surface_chart,
         term_chart,
-        mo.md(f"""
-        <span style='color:{INK2}'>**Why some cells are empty.** Snapshots exist only in the two trading windows and
-        every Deribit expiry is 08:00 UTC, so times to expiry cluster: whole days or 1 hour plus whole days (07:00 and
-        08:00 snapshots) and 10–12 hours plus whole days (20:00–22:00). A row that catches only one cluster has fewer
-        observations, and its outer cells fall below the threshold. Under 8 hours the only smiles are the expiring
-        daily at 07:00, exactly one hour out; spread across the strike bins that is at most 13 strikes per cell, so
-        those rows are blank in the surface (the term structure's first point is their ATM vol). The 8–12h row is the US-afternoon smile of the next
-        morning's expiry, whose life is mostly the overnight hours.</span>
-        """),
+        mo.md(f"<span style='color:{INK2}'>{EMPTY_NOTE}</span>"),
     ])
     return H_EDGES, SD_EDGES, deribit_surface, surface_chart, term_chart
 
@@ -280,10 +293,10 @@ def _(H_EDGES, INK2, SD_EDGES, deribit_surface, go, mo):
     def surface_figure(g, title, log_time=True):
         """Plotly 3D surface of a `pooled_surface` grid, styled as 03's (Deribit orange instead of Kalshi blue).
         Time on a log axis with explicit labels unless `log_time` is False."""
-        ticks = (dict(type="log", tickvals=[1, 2, 3, 6, 12, 24, 48, 72, 120, 168],
-                      ticktext=["1h", "2h", "3h", "6h", "12h", "1d", "2d", "3d", "5d", "7d"]) if log_time else
-                 dict(type="linear", tickvals=[24, 48, 72, 96, 120, 144, 168, 192],
-                      ticktext=["1d", "2d", "3d", "4d", "5d", "6d", "7d", "8d"]))
+        ticks = (dict(type="log", tickvals=[1, 3, 12, 24, 72, 168, 720, 2160, 8760],
+                      ticktext=["1h", "3h", "12h", "1d", "3d", "1w", "1mo", "3mo", "1y"]) if log_time else
+                 dict(type="linear", tickvals=[24, 48, 72, 96, 120, 144, 168],
+                      ticktext=["1d", "2d", "3d", "4d", "5d", "6d", "7d"]))
         fig = go.Figure(go.Surface(
             x=[i.mid for i in g.columns], y=[i.mid for i in g.index], z=g.to_numpy(),
             colorscale=[[0, "#fde3d6"], [1, "#7a2a0e"]], cmin=0.3, cmax=0.7,
@@ -297,25 +310,27 @@ def _(H_EDGES, INK2, SD_EDGES, deribit_surface, go, mo):
         return fig
 
 
-    surface_3d = surface_figure(deribit_surface(H_EDGES, SD_EDGES), "Deribit implied-vol surface, 1 hour to 8.5 days")
-    surface_3d_1d8d = surface_figure(deribit_surface([24, 36, 48, 60, 72, 96, 120, 144, 168, 204], SD_EDGES),
-                                     "Deribit implied-vol surface, 1 to 8.5 days to expiry", log_time=False)
+    surface_3d = surface_figure(deribit_surface(H_EDGES, SD_EDGES), "Deribit implied-vol surface, every expiry")
+    surface_3d_week = surface_figure(deribit_surface([24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168], SD_EDGES),
+                                     "Deribit implied-vol surface, 1 to 7 days to expiry (Kalshi's weekly horizon)",
+                                     log_time=False)
     mo.vstack([
         mo.md("""
         ## 4 · 3D surfaces
 
-        Drag to rotate, scroll to zoom, hover for values. Same construction as the heatmap. The first has time on a
-        log axis so the last hours are visible; the second covers 1 to 8.5 days on a linear axis. Holes are cells
-        with too few observations.
+        Drag to rotate, scroll to zoom, hover for values. Same construction as the heatmap. The first covers every
+        expiry with time on a log axis, so the last hours and the longest expiries are both visible; the second covers
+        1 to 7 days, the life of a Kalshi weekly, on a linear axis in 12-hour rows. Holes are cells with too few
+        observations.
         """),
         surface_3d,
-        surface_3d_1d8d,
+        surface_3d_week,
     ])
-    return surface_3d, surface_3d_1d8d
+    return surface_3d, surface_3d_week
 
 
 @app.cell
-def _(ROOT, mo, surface_3d, surface_3d_1d8d, surface_chart, term_chart):
+def _(ROOT, mo, surface_3d, surface_3d_week, surface_chart, term_chart):
     # Save the figures when run as a script (python 15_deribit_iv_surface.py); opening the notebook writes nothing
     if not mo.running_in_notebook():
         _out = ROOT / "outputs" / "figures"
@@ -325,7 +340,7 @@ def _(ROOT, mo, surface_3d, surface_3d_1d8d, surface_chart, term_chart):
         (ROOT / "outputs" / "15_deribit_iv_surface_3d.html").write_text(
             "<!doctype html><html><head><meta charset='utf-8'><title>Deribit implied-vol surface</title></head><body>"
             + surface_3d.to_html(include_plotlyjs="cdn", full_html=False)
-            + surface_3d_1d8d.to_html(include_plotlyjs=False, full_html=False) + "</body></html>")
+            + surface_3d_week.to_html(include_plotlyjs=False, full_html=False) + "</body></html>")
     return
 
 

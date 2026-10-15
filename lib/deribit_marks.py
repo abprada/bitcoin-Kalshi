@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import ndtr
 
-from lib import iv
+from lib import deribit, iv
 
 YEAR_SECONDS = 365 * 86_400
 TAKER_FEE = 0.0003          # options: 0.03% of the underlying per option ...
@@ -35,6 +35,7 @@ FEE_CAP = 0.125             # ... capped at 12.5% of the option's price
 PERP_TAKER_FEE = 0.0005     # BTC-PERPETUAL taker fee, share of notional
 SMILE_MAX_SD = 2.5          # strikes used in a smile fit: within this many ATM standard deviations
 MIN_SMILE_STRIKES = 3
+MAX_TTE_DAYS = 15           # as 00_fetch_deribit.py: options expiring further out are not used here
 
 
 def load_options(root: Path, start=None, end=None) -> pd.DataFrame:
@@ -45,18 +46,37 @@ def load_options(root: Path, start=None, end=None) -> pd.DataFrame:
     `basis` = fwd / index - 1, `k` = ln(K / fwd), `m` = k / sqrt(tau), `vega` (USD per vol point, i.e. per 0.01).
     """
     files = sorted((Path(root) / "data" / "raw" / "deribit" / "options").glob("*.parquet"))
-    d = pd.concat(map(pd.read_parquet, files), ignore_index=True)
+    d = (pd.concat(map(pd.read_parquet, files), ignore_index=True) if files
+         else read_full_trades(root, start, end, max_tte_days=MAX_TTE_DAYS))   # same trades, from the full fetch
     if start is not None:
         d = d[d.ts >= pd.Timestamp(start, tz="UTC")]
     if end is not None:
         d = d[d.ts < pd.Timestamp(end, tz="UTC")]
-    d["tau_years"] = (d.expiry - d.ts).dt.total_seconds() / YEAR_SECONDS
     return add_forward(d)
 
 
+def read_full_trades(root: Path, start=None, end=None, max_tte_days: float | None = None) -> pd.DataFrame:
+    """`00_fetch_deribit_all.py`'s file (every trade, every expiry) in `00_fetch_deribit.py`'s columns, quickly: no
+    per-trade vol inversion as in `deribit.load_trades`. `max_tte_days` keeps expiries at most that far after the
+    trade; `start` / `end` are UTC days (inclusive)."""
+    f = pd.read_parquet(Path(root) / deribit.FULL_TRADES,
+                        columns=["date", "time_utc", "trade_id", "instrument", "expiry_utc", "strike", "cp", "price_btc",
+                                 "mark_price_btc", "iv", "index_price", "amount", "direction"])
+    if start is not None:
+        f = f[f.date >= str(pd.Timestamp(start).date())]
+    if end is not None:
+        f = f[f.date <= str(pd.Timestamp(end).date())]
+    f["ts"] = pd.to_datetime(f.pop("time_utc"), format="%Y-%m-%dT%H:%M:%S.%f+00:00", utc=True)
+    f["expiry"] = pd.to_datetime(f.pop("expiry_utc"), format="%Y-%m-%dT%H:%M:%S+00:00", utc=True)
+    if max_tte_days is not None:
+        f = f[f.expiry - f.ts <= pd.Timedelta(days=max_tte_days)]
+    return f.drop(columns="date").reset_index(drop=True)
+
+
 def add_forward(d: pd.DataFrame) -> pd.DataFrame:
-    """`load_options`' columns for any trades frame with ts, expiry, tau_years, strike, cp, iv (percent),
-    mark_price_btc, price_btc and index_price (e.g. `deribit.load_trades` on the collaborator's CSV)."""
+    """`load_options`' columns for any trades frame with ts, expiry, strike, cp, iv (percent), mark_price_btc,
+    price_btc and index_price (`read_full_trades`, or `deribit.load_trades` on the collaborator's CSV)."""
+    d = d.assign(tau_years=(d.expiry - d.ts).dt.total_seconds() / YEAR_SECONDS)
     d = d[(d.iv > 0) & (d.iv < 500) & (d.mark_price_btc > 0) & (d.tau_years > 0)].copy()
     d["iv_d"] = d.iv / 100
     d["mark_usd"] = d.mark_price_btc * d.index_price

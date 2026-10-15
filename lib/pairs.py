@@ -82,19 +82,20 @@ def kalshi_smiles(quotes: pd.DataFrame, minutes) -> dict:
 
 
 def build_pairs(root: Path) -> dict:
-    """Pair every Deribit trade in the afternoon window with Kalshi's vol at the same strike and minute.
+    """Pair every Deribit trade with Kalshi's vol at the same strike and minute.
 
-    Deribit: trades in Friday expiries (the ones whose date matches a Kalshi weekly), 19:30-22:29 UTC, with a mark
-    vol, before expiry. Kalshi: the weekly expiring 5pm ET that Friday, its ladder at the trade's minute, used if
+    Deribit: trades in Friday expiries (the ones whose date matches a Kalshi weekly), with a mark vol, before expiry;
+    every hour from the full file (`deribit.trades_path`), 19:30-22:29 UTC only from the collaborator's CSV. Kalshi: the weekly expiring 5pm ET that Friday, its ladder at the trade's minute, used if
     it has an ATM vol and a fine enough strike grid (`compare.usable_kalshi_snapshots`). Needs data/clean from 02.
 
     Returns a dict: `pairs` (one row per observation with both vols), `funnel` (how many observations survive
     each step), `trades` (the Deribit trades considered), `hour_profile`.
     """
-    data, clean = root / "data", root / "data" / "clean"
-    trades = deribit.load_trades(data / "deribit_btc_options.csv.gz")
-    trades = trades[(trades.window == "us_afternoon") & (trades.expiry.dt.dayofweek == 4)
-                    & trades.iv_mark.notna() & (trades.ts < trades.expiry)]
+    clean = root / "data" / "clean"
+    path = deribit.trades_path(root)
+    trades = deribit.load_trades(path, expiry_weekday=4)
+    trades = trades[trades.iv_mark.notna() & (trades.ts < trades.expiry)
+                    & ((trades.window == "us_afternoon") | deribit.is_full(path))]
     obs = deribit_observations(trades)
     spot = pd.read_parquet(clean / "btc_spot_1m.parquet", columns=["ts", "spot"]).set_index("ts").spot
     hour_profile = deribit.hourly_variance(spot)
@@ -139,7 +140,8 @@ def build_pairs(root: Path) -> dict:
     p["day"] = p.minute.dt.date
 
     funnel = pd.DataFrame([
-        ("Deribit trades: afternoon window, Friday expiries, with a mark vol", len(trades)),
+        (f"Deribit trades: {'all day' if deribit.is_full(path) else 'afternoon window'}, Friday expiries, with a mark vol",
+         len(trades)),
         ("… as observations (fills at one strike and minute merged)", len(obs)),
         ("… while Kalshi's weekly for that Friday is trading", n_live),
         ("… with a usable Kalshi ladder that minute", n_ladder),

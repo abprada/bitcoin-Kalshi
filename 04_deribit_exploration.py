@@ -22,9 +22,12 @@ def _(mo):
     # 04 · Deribit exploration
 
     First look at the options market we compare Kalshi against (handout Q2b). Deribit is the largest BTC
-    options exchange. The file `data/deribit_btc_options.csv.gz` (from a collaborator) holds individual
-    **trades**, not continuous quotes: each row is one fill with its price, size, direction, Deribit's
-    implied vol and Deribit's mark price (its own fair-value estimate) at that moment.
+    options exchange. The data are individual **trades**, not continuous quotes: each row is one fill with its
+    price, size, direction, Deribit's implied vol and Deribit's mark price (its own fair-value estimate) at that
+    moment. We use **every BTC option trade**, all day and every expiry, 15 Nov 2024 – 30 Sep 2026
+    (`data/raw/deribit_trades/`, from `00_fetch_deribit_all.py`; the span of our Kalshi data). Without that
+    fetch the notebook falls back to the collaborator's file `data/deribit_btc_options.csv.gz`, which keeps only
+    two windows a day and short expiries, and is a subset of it.
 
     Two things to keep in mind throughout:
 
@@ -45,7 +48,7 @@ def _(alt):
     # Chart styling: reference palette (slot 1 blue = Kalshi, slot 2 orange = Deribit), recessive gray chrome.
     INK, INK2, MUTED, CONTEXT = "#0b0b0b", "#52514e", "#898781", "#c3c2b7"
     SLOT1, SLOT2 = "#2a78d6", "#eb6834"
-    WINDOW_SCALE = alt.Scale(domain=["us_afternoon", "exact_0800UTC"], range=[SLOT1, SLOT2])
+    WINDOW_SCALE = alt.Scale(domain=["us_afternoon", "exact_0800UTC", "other"], range=[SLOT1, SLOT2, MUTED])
     SOURCE_SCALE = alt.Scale(domain=["Kalshi", "Deribit"], range=[SLOT1, SLOT2])
     W, H = 640, 200
 
@@ -75,7 +78,7 @@ def _(alt):
 def _(deribit, mo, pd):
     ROOT = mo.notebook_dir()
     DERIVED = ROOT / "data" / "derived"
-    trades = deribit.load_trades(ROOT / "data" / "deribit_btc_options.csv.gz")
+    trades = deribit.load_trades(deribit.trades_path(ROOT))   # every trade if fetched, else the collaborator's file
     kalshi_snaps = pd.read_parquet(DERIVED / "iv_snapshots.parquet",
                                    columns=["snap", "event_ticker", "ts", "atm_iv", "hours_to_expiry", "clean"])
     kalshi_snaps["expiry"] = kalshi_snaps.ts + pd.to_timedelta(kalshi_snaps.hours_to_expiry, unit="h")
@@ -112,11 +115,12 @@ def _(mo, pd, trades):
         expiries are live at once and new ones are listed as old ones expire. This is unlike Kalshi, where each
         weekly opens on Friday and lives exactly one week. A Friday Deribit expiry is listed weeks in advance.
 
-        **What this file contains.** The collaborator kept only trades in two windows each day (`us_afternoon`
-        around Kalshi's 5pm ET expiry, and `exact_0800UTC`, the hour before Deribit's expiry), and only expiries a
-        few days ahead: daily expiries up to 3.5 days before they expire, Friday expiries up to 8.5 days before.
-        So for any day we see trades in about five expiries at once; in the afternoon window
-        {_fri:.0%} of trades are in a Friday expiry, the only ones whose date matches a Kalshi weekly.
+        **What the data contain.** Every trade, labelled by time of day: `us_afternoon` (19:30–22:30 UTC, around
+        Kalshi's 5pm ET expiry), `exact_0800UTC` (07:00–08:00, the hour before Deribit's expiry) and `other`. The
+        first two are the collaborator's windows, kept so that comparisons with Kalshi stay at the same time of day.
+        In the afternoon window {_fri:.0%} of trades are in a Friday expiry, the only ones whose date matches a
+        Kalshi weekly. The table: per weekday of expiry, how many expiries traded, their median trade count, and
+        how far ahead the first trade came.
 
         **Mark price.** `mark_price_btc` is Deribit's own estimate of an option's fair value at that moment, computed
         from its implied-vol surface and the index. It is not a trade. Deribit uses it to value open positions and
@@ -138,11 +142,13 @@ def _(mo, np, pd, trades):
         ("Days", f"{_t.date.nunique()} ({_t.date.min()} to {_t.date.max()})"),
         ("Window `us_afternoon`", f"{_span['us_afternoon']}, around Kalshi's 5pm ET expiry"),
         ("Window `exact_0800UTC`", f"{_span['exact_0800UTC']}, the hour before Deribit's 08:00 UTC expiry"),
+        ("Share of trades by window", ", ".join(f"`{w}` {s:.0%}" for w, s in _t.window.value_counts(normalize=True).items())),
         ("Expiries", f"{_t.expiry.nunique()} distinct, all at 08:00 UTC, up to {_t.tau_years.max() * 365:.1f} days ahead"),
         ("Calls / puts", f"{(_t.cp == 'C').sum():,} / {(_t.cp == 'P').sum():,}"),
         ("Median trade size", f"{_t.amount.median():.1f} BTC (mean {_t.amount.mean():.1f}, max {_t.amount.max():,.0f})"),
         ("`iv` placeholders (0 or 999)", f"{int((~_t.iv_valid).sum()):,} ({(~_t.iv_valid).mean():.1%})"),
-        ("Exact duplicate rows", f"{int(_t.exact_dup.sum()):,} ({_t.exact_dup.mean():.1%}); no trade id, so kept"),
+        (("Duplicate trade ids", f"{int(_t.trade_id.duplicated().sum()):,}") if "trade_id" in _t else
+         ("Exact duplicate rows", f"{int(_t.exact_dup.sum()):,} ({_t.exact_dup.mean():.1%}); no trade id, so kept")),
         ("`price_usd` = `price_btc` × `index_price`",
          f"max relative error {((_t.price_btc * _t.index_price - _t.price_usd).abs() / _t.price_usd).max():.0e}"),
         ("Deribit `iv` vs our inversion of its mark price",
@@ -171,15 +177,17 @@ def _(H, W, WINDOW_SCALE, alt, mo, pd, trades):
                 tooltip=[alt.Tooltip("date:T", format="%Y-%m-%d"), "window:N", alt.Tooltip("trades:Q", format=",")])
         .properties(title="Trades per day, by window", width=W, height=H)
     )
-    _tte = (trades.assign(days=(trades.tau_years * 365 // 0.25) * 0.25)
+    _days = trades.tau_years * 365
+    _tte = (trades[_days < 15].assign(days=(_days * 4 // 1) / 4)
             .groupby(["window", "days"]).size().rename("trades").reset_index())
     tte_chart = (
         alt.Chart(_tte).mark_bar(opacity=0.85, width=4)
-        .encode(x=alt.X("days:Q", title="days to expiry at the trade (0.25-day bins)"),
+        .encode(x=alt.X("days:Q", title="days to expiry at the trade (0.25-day bins, first 15 days)"),
                 y=alt.Y("trades:Q", title="trades", stack=None),
                 color=alt.Color("window:N", scale=WINDOW_SCALE, title=None),
                 tooltip=["window:N", alt.Tooltip("days:Q", title="days from"), alt.Tooltip("trades:Q", format=",")])
-        .properties(title="Time to expiry at the trade", width=W, height=H)
+        .properties(title=f"Time to expiry at the trade ({(_days >= 15).mean():.0%} of trades are 15+ days out, not shown)",
+                    width=W, height=H)
     )
     mo.vstack([
         mo.md(f"""
@@ -384,8 +392,8 @@ def _(H, MUTED, SLOT1, SLOT2, SOURCE_SCALE, W, alt, atm_daily, hour_profile, mo,
         """),
         profile_chart,
         mo.ui.table(gap_by_tte, selection=None, show_download=False, pagination=False),
-        mo.md("""
-        **The rest of the gap**, about two points, is still open. Candidates to test in `05`:
+        mo.md(f"""
+        **The rest of the gap**, about {_gap - _hrs:.1f} points, is still open. Candidates to test in `05`:
 
         - **Demand on Kalshi.** Kalshi is a US-regulated exchange used mostly by retail traders. If they mostly buy contracts (betting on moves)
           and few professionals sell, prices sit above fair value. Kalshi's ATM vol is also above BTC's realized vol

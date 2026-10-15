@@ -126,6 +126,8 @@ def main(argv=None) -> None:
     p.add_argument("--start", type=date.fromisoformat, default=date(2025, 10, 1), help="first UTC day")
     p.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 30), help="last UTC day")
     p.add_argument("--out", type=Path, default=OUT_DIR)
+    p.add_argument("--no-options", action="store_true",
+                   help="perpetual and funding only (the options come from 00_fetch_deribit_all.py instead)")
     a = p.parse_args(argv)
     if a.end >= datetime.now(timezone.utc).date():
         p.error("--end must be before today (UTC): an incomplete window would be cached as done")
@@ -133,7 +135,8 @@ def main(argv=None) -> None:
     hist, live = Client(HISTORY_URL, min_interval=0.1), Client(LIVE_URL, min_interval=0.1)
     day = lambda ts: datetime.fromtimestamp(ts, timezone.utc).date()
     for label, s, e in month_windows(a.start, a.end):
-        for kind, client, fetch in (("perp", live, fetch_perp), ("options", hist, fetch_options)):
+        kinds = (("perp", live, fetch_perp),) + (() if a.no_options else (("options", hist, fetch_options),))
+        for kind, client, fetch in kinds:
             path = a.out / kind / f"{day(s)}_{day(e)}.parquet"
             if path.exists():
                 continue

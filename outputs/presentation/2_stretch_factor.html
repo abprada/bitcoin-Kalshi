@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"background": "#fcfcfb", "font": "system-ui, -apple-system, 'Segoe UI', sans-serif", "view": {"stroke": null}, "axis": {"gridColor": "#e1e0d9", "domainColor": "#c3c2b7", "tickColor": "#c3c2b7", "labelColor": "#52514e", "titleColor": "#52514e", "titleFontWeight": "normal", "labelFontSize": 13, "titleFontSize": 14}, "legend": {"labelColor": "#52514e", "titleColor": "#52514e", "orient": "top", "labelFontSize": 13, "symbolStrokeWidth": 3}, "axisX": {"labelAngle": 0}, "title": {"color": "#0b0b0b", "anchor": "start", "fontWeight": 600, "fontSize": 18, "subtitleColor": "#52514e", "subtitleFontSize": 13, "subtitlePadding": 6, "offset": 12}, "line": {"strokeWidth": 2.5}, "point": {"size": 70, "filled": true}}, "layer": [{"mark": {"type": "area", "color": "#eb6834", "opacity": 0.18}, "encoding": {"x": {"field": "days", "scale": {"domain": [0.5, 7], "nice": false, "reverse": true}, "title": "days to Kalshi's expiry (expiry on the right)", "type": "quantitative"}, "y": {"field": "10%", "type": "quantitative"}, "y2": {"field": "90%"}}}, {"mark": {"type": "line", "color": "#eb6834", "point": {"color": "#eb6834", "size": 50}}, "encoding": {"tooltip": [{"field": "days", "format": ".2f", "title": "days left", "type": "quantitative"}, {"field": "50%", "format": ".3f", "title": "median factor", "type": "quantitative"}, {"field": "10%", "format": ".3f", "type": "quantitative"}, {"field": "90%", "format": ".3f", "type": "quantitative"}, {"field": "count", "format": ",", "title": "snapshots", "type": "quantitative"}], "x": {"field": "days", "scale": {"domain": [0.5, 7], "nice": false, "reverse": true}, "title": "days to Kalshi's expiry (expiry on the right)", "type": "quantitative"}, "y": {"axis": {"format": ".2f", "labelExpr": "'\u00d7' + format(datum.value, '.2f')"}, "field": "50%", "scale": {"zero": false}, "title": "Deribit vol is multiplied by", "type": "quantitative"}}}], "data": {"name": "data-bdd1c24c95375a3f5059daf8d0dc819c"}, "height": 340, "title": {"text": "Stretching Deribit's vol to Kalshi's expiry matters most near expiry", "subtitle": "Median factor per quarter-day over the 15-minute snapshots (shaded: 10th\u201390th percentile). Variance adds up hour by hour, each hour weighted by the profile on slide 1."}, "width": 760, "$schema": "https://vega.github.io/schema/vega-lite/v6.4.1.json", "datasets": {"data-bdd1c24c95375a3f5059daf8d0dc819c": [{"days": 0.625, "10%": 1.1248171427612803, "50%": 1.2543797618560355, "90%": 1.266292428565624, "count": 641.0}, {"days": 0.875, "10%": 1.1304259457143477, "50%": 1.1389561860307185, "90%": 1.2348570646558732, "count": 1080.0}, {"days": 1.125, "10%": 1.0588636084923175, "50%": 1.0964108793440013, "90%": 1.1224895419297864, "count": 1098.0}, {"days": 1.375, "10%": 1.0267112235650049, "50%": 1.0322265942937223, "90%": 1.0405656031300066, "count": 962.0}, {"days": 1.625, "10%": 1.0470524815404043, "50%": 1.0516564594259399, "90%": 1.05408392266975, "count": 745.0}, {"days": 1.875, "10%": 1.0530881239783887, "50%": 1.054021270399947, "90%": 1.0562746282036655, "count": 1069.0}, {"days": 2.125, "10%": 1.038973684285293, "50%": 1.047004987348756, "90%": 1.0538287772617705, "count": 1124.0}, {"days": 2.375, "10%": 1.027970732152191, "50%": 1.0297578355201407, "90%": 1.0328064015050167, "count": 1095.0}, {"days": 2.625, "10%": 1.032117848452855, "50%": 1.0344520933374386, "90%": 1.036571841486858, "count": 1011.0}, {"days": 2.875, "10%": 1.0357016798789658, "50%": 1.0367410438866944, "90%": 1.038620222172942, "count": 984.0}, {"days": 3.125, "10%": 1.0311870560616385, "50%": 1.0346519492937922, "90%": 1.0372645816156423, "count": 1071.0}, {"days": 3.375, "10%": 1.0262973877740307, "50%": 1.0274184460080726, "90%": 1.0288976919707375, "count": 1024.0}, {"days": 3.625, "10%": 1.0280940298729444, "50%": 1.0291025565019434, "90%": 1.0303760328846225, "count": 922.0}, {"days": 3.875, "10%": 1.0292052773590994, "50%": 1.0295914148510772, "90%": 1.0311067602421637, "count": 943.0}, {"days": 4.125, "10%": 1.0282487216164142, "50%": 1.0297235253349761, "90%": 1.0314480869109106, "count": 987.0}, {"days": 4.375, "10%": 1.0245961679308415, "50%": 1.0251468845835854, "90%": 1.027140673106128, "count": 1005.0}, {"days": 4.625, "10%": 1.024778793119284, "50%": 1.0248599676899357, "90%": 1.0262812980484428, "count": 937.0}, {"days": 4.875, "10%": 1.02192189908492, "50%": 1.0239222599024271, "90%": 1.0260436521448093, "count": 888.0}, {"days": 5.125, "10%": 1.0221038602897936, "50%": 1.0226787986885684, "90%": 1.023839763505227, "count": 781.0}, {"days": 5.375, "10%": 1.0227686839023429, "50%": 1.0234324472731162, "90%": 1.0245306049417602, "count": 891.0}, {"days": 5.625, "10%": 1.0238732685202676, "50%": 1.024756342634719, "90%": 1.0260259003779995, "count": 827.0}, {"days": 5.875, "10%": 1.0251891628007304, "50%": 1.025705241694437, "90%": 1.0270738995377193, "count": 711.0}, {"days": 6.125, "10%": 1.0258928471214142, "50%": 1.026009453799204, "90%": 1.0275572325448554, "count": 749.0}, {"days": 6.375, "10%": 1.0260465430243264, "50%": 1.0264787094393029, "90%": 1.027881542847084, "count": 791.0}, {"days": 6.625, "10%": 1.026814805917606, "50%": 1.0268906316037465, "90%": 1.028568661302969, "count": 755.0}, {"days": 6.875, "10%": 1.0270464071095597, "50%": 1.027292892359472, "90%": 1.0290247838484277, "count": 752.0}]}};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>

@@ -35,5 +35,6 @@ by the current pipeline. Obtain suitable data and permission to use it independe
   using the trade-index averaging method described in that function.
 
 The former WRDS/IBIT options input is unused by the current Python pipeline and is excluded.
-Raw data and derived outputs should remain local. Removing a file from the current tree
+Raw data and intermediate datasets remain local; charts and summary tables in `outputs/` are tracked.
+Removing a file from the current tree
 does not erase it from earlier Git commits.

@@ -17,7 +17,7 @@ __marimo__/
 .vscode/
 .idea/
 
-# Local datasets and generated exports
+# Local datasets
 *.csv
 *.csv.gz
 *.tsv
@@ -32,8 +32,11 @@ __marimo__/
 *.PDF
 /data/*
 !/data/README.md
-/outputs/
 /kalshi_equity/
+
+# Keep generated research outputs, including summary tables
+!/outputs/
+!/outputs/**
 
 # Local research material and historical project notes
 /Literature/

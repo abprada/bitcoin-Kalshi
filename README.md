@@ -67,10 +67,10 @@ available. The single-event hedging example also needs
 
 ## Data and outputs
 
-Datasets, caches, and generated charts stay local and are ignored by Git. No datasets are
+Input datasets and caches stay local and are ignored by Git. No input datasets are
 included in a fresh checkout. Some analyses depend on externally supplied hourly snapshots
 and delivery prices that the fetchers do not reconstruct; these are documented in
-[data/README.md](data/README.md). Generated charts are written under `outputs/`.
+[data/README.md](data/README.md). Generated charts and summary tables are tracked under `outputs/`.
 
 The [IV methodology](docs/iv_surface_method.md) explains the estimation procedure.
 Historical strategy results depend on quote quality, observation timing, settlement
@@ -84,5 +84,5 @@ python -m compileall -q lib tests
 ```
 
 Keep reusable calculations in `lib/` and presentation code in the notebooks. Tests should
-use small synthetic examples and mock network requests. Do not commit datasets, credentials,
-or generated exports.
+use small synthetic examples and mock network requests. Do not commit input datasets or
+credentials. Generated research outputs belong in `outputs/`.

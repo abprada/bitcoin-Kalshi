@@ -157,3 +157,7 @@ python -m compileall -q lib tests
 Keep reusable calculations in `lib/` and presentation code in the notebooks. Tests should
 use small synthetic examples and mock network requests. Do not commit input datasets or
 credentials. Generated research outputs belong in `outputs/`.
+
+## License
+
+The project is available under the [MIT License](LICENSE).

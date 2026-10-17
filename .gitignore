@@ -16,6 +16,7 @@ __marimo__/
 .DS_Store
 .vscode/
 .idea/
+.publication-backup/
 
 # Local datasets
 *.csv

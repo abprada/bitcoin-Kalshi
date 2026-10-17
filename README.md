@@ -123,6 +123,8 @@ by the strategy notebooks.
 | `15_deribit_iv_surface.py` | Deribit volatility surfaces |
 | `16_presentation_figures.py` | Presentation charts |
 | `17_settlement_factor.py` | Model settlement-window and time-of-week adjustments |
+| `17_lead_lag.py` | Lead–lag analysis and adjustment after dislocations |
+| `18_trades.py` | Consolidated trade results before and after costs |
 | `liquidity_summary.py` | Generate liquidity summaries |
 | `lib/` | Shared pricing, cleaning, fetching, and strategy functions |
 | `tests/` | Automated tests |

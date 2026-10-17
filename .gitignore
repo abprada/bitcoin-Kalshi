@@ -18,6 +18,18 @@ __marimo__/
 .idea/
 
 # Local datasets and generated exports
+*.csv
+*.csv.gz
+*.tsv
+*.parquet
+*.feather
+*.arrow
+*.h5
+*.hdf5
+*.xlsx
+*.xls
+*.pdf
+*.PDF
 /data/*
 !/data/README.md
 /outputs/

@@ -13,4 +13,6 @@ calendar_straddle Deribit calendar straddle backtest: long ~7d / short ~1d, delt
 dislocation       Kalshi vs Deribit dislocations and market-vs-market BTC forecasts (08, 11)
 strategy_ab       the two dislocation strategies as portfolios, execution variants, out of sample (08, 12)
 binary_hedge      hedging a long Kalshi binary with a short call spread, frictionless (08, 13)
+slides            MIT colors and the two-surface 3D chart for the slides (16)
+settlement        Deribit -> Kalshi vol factor from the two settlement rules: busy hours and averaging windows (17)
 """

@@ -1,11 +1,9 @@
-requests>=2.32
-cryptography>=43.0
-python-dotenv>=1.0
+numpy>=1.26
 pandas>=2.2
 pyarrow>=17.0
-pytest>=8.0
+requests>=2.32
+scipy>=1.13
 marimo>=0.25
 altair>=5.5
-scipy>=1.13
 plotly>=5.20
 vl-convert-python>=1.6

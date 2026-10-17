@@ -1,35 +1,32 @@
-# Virtual environment
+# Python environments and caches
 .venv/
 venv/
-
-# Secrets / Kalshi API keys
-.env
-.env.*
-*.pem
-*.key
-
-# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ipynb_checkpoints/
+__marimo__/
 
-# OS / editor
+# Credentials and machine-specific settings
+.env
+.env.*
+*.pem
+*.key
+.aws/
 .DS_Store
 .vscode/
 .idea/
 
-# Fetched data (regenerate with the 00_fetch_*.py scripts)
-data/raw/
+# Local datasets and generated exports
+/data/*
+!/data/README.md
+/outputs/
+/kalshi_equity/
 
-# marimo session cache
-__marimo__/
-
-# Clean dataset (regenerate with 02_clean_data.py)
-data/clean/
-
-# Derived outputs (regenerate with 03_iv_surface.py)
-data/derived/
-
-# Course handout photo (contains instructor contact details)
-Project Description.HEIC
+# Local research material and historical project notes
+/Literature/
+/LLM Instructions/
+/progress.md
+/CLAUDE.md
+/check.py
+/Project Description.HEIC

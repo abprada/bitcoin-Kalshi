@@ -12,9 +12,9 @@ def _():
     import altair as alt
     import plotly.graph_objects as go
 
-    from lib import compare, iv, liquidity, pairs
+    from lib import compare, iv, liquidity, pairs, slides
 
-    return alt, compare, go, iv, liquidity, mo, np, pairs, pd
+    return alt, compare, go, iv, liquidity, mo, np, pairs, pd, slides
 
 
 @app.cell
@@ -385,7 +385,7 @@ def _(H, INK, MARKETS, MUTED, W, alt, mo, cmp, pairs, pd):
 
 
 @app.cell
-def _(INK2, W, alt, go, mo, cmp, pairs):
+def _(INK2, W, alt, go, mo, cmp, pairs, slides):
     # Slide 6: the surfaces, on the same 15-minute snapshots and axes; rotatable 3D (HTML) plus flat heatmaps for a static slide
     surf = pairs.surface(cmp)
     surf["days"] = ((surf.hours_lo + surf.hours_hi) / 48).round().astype(int)
@@ -412,9 +412,10 @@ def _(INK2, W, alt, go, mo, cmp, pairs):
 
     surface_kalshi = _fig([_surface("kalshi", "Kalshi", _blues)], "Kalshi implied-vol surface")
     surface_deribit = _fig([_surface("deribit", "Deribit (stretched)", _oranges)], "Deribit implied-vol surface (stretched to Kalshi's expiry)")
-    surface_both = _fig([_surface("kalshi", "Kalshi", _blues, 0.95, False),
-                         _surface("deribit", "Deribit (stretched)", _oranges, 0.7, False)],
-                        "Kalshi (blue) and Deribit (orange) on the same axes")
+    # Both on one set of axes, in MIT colors (lib/slides.py): Kalshi red, Deribit gray
+    surface_both = slides.two_surfaces_3d(_sd, _days, _grid("kalshi"), _grid("deribit"), "Kalshi",
+                                          "Deribit, stretched to Kalshi's expiry", "Implied-vol surfaces: Kalshi vs Deribit",
+                                          "Same 15-minute snapshots and strikes · Deribit stretched to Kalshi's 5pm ET expiry")
     # The spread surface: strikes within ±3 standard deviations of the money
     _gsurf = surf[surf.sd.abs() <= 3]
     _sd2 = [s for s in _sd if abs(s) <= 3]
